@@ -1,0 +1,155 @@
+import Papa from 'papaparse';
+
+/**
+ * Parse Canvas rubric CSV export into internal rubric structure
+ * @param {File} file - CSV file
+ * @returns {Promise<Object>} Parsed rubric object
+ */
+export const parseCanvasRubricCSV = (file) => {
+  return new Promise((resolve, reject) => {
+    Papa.parse(file, {
+      complete: (results) => {
+        try {
+          const rubric = processCanvasCSV(results.data);
+          resolve(rubric);
+        } catch (error) {
+          reject(error);
+        }
+      },
+      error: (error) => {
+        reject(error);
+      },
+      skipEmptyLines: true,
+    });
+  });
+};
+
+/**
+ * Process parsed CSV data into rubric structure
+ * @param {Array} data - Parsed CSV rows
+ * @returns {Object} Rubric object
+ */
+const processCanvasCSV = (data) => {
+  if (data.length < 2) {
+    throw new Error('CSV file is empty or invalid');
+  }
+
+  const headers = data[0];
+  const rows = data.slice(1);
+
+  // Find the rubric name from the first data row
+  const rubricName = rows[0]?.[0] || 'Untitled Rubric';
+
+  // Process criteria
+  const criteria = [];
+  
+  for (const row of rows) {
+    if (!row[0] || !row[1]) continue; // Skip rows without rubric name or criteria name
+
+    const criteriaName = row[1];
+    const criteriaDescription = row[2] || '';
+    const enableRange = row[3] || '';
+
+    // Parse rating levels - they come in groups of 3 columns: Name, Description, Points
+    const levels = [];
+    let colIndex = 4;
+
+    while (colIndex < row.length) {
+      const ratingName = row[colIndex];
+      const ratingDescription = row[colIndex + 1];
+      const ratingPoints = row[colIndex + 2];
+
+      // Stop if we hit empty rating data
+      if (!ratingName && !ratingPoints) break;
+
+      levels.push({
+        name: ratingName || '',
+        description: ratingDescription || '',
+        points: ratingPoints ? parseFloat(ratingPoints) : 0,
+      });
+
+      colIndex += 3;
+    }
+
+    // Sort levels by points descending (highest first)
+    levels.sort((a, b) => b.points - a.points);
+
+    criteria.push({
+      name: criteriaName,
+      description: criteriaDescription,
+      enableRange: enableRange,
+      levels: levels,
+      selectedLevel: null, // Index of selected level
+      comment: '', // Additional comment for this criterion
+    });
+  }
+
+  return {
+    name: rubricName,
+    criteria: criteria,
+    createdAt: new Date().toISOString(),
+  };
+};
+
+/**
+ * Calculate total points from rubric
+ * @param {Object} rubric - Rubric with selected levels
+ * @returns {Object} { earned, possible }
+ */
+export const calculateTotalPoints = (rubric) => {
+  let earned = 0;
+  let possible = 0;
+
+  for (const criterion of rubric.criteria) {
+    // Get max possible points
+    const maxPoints = Math.max(...criterion.levels.map(l => l.points));
+    possible += maxPoints;
+
+    // Get earned points
+    if (criterion.selectedLevel !== null && criterion.selectedLevel !== undefined) {
+      const selectedLevelData = criterion.levels[criterion.selectedLevel];
+      earned += selectedLevelData ? selectedLevelData.points : 0;
+    }
+  }
+
+  return { earned, possible };
+};
+
+/**
+ * Generate feedback text from graded rubric
+ * @param {Object} rubric - Rubric with selected levels and comments
+ * @returns {string} Formatted feedback text
+ */
+export const generateFeedbackText = (rubric) => {
+  const { earned, possible } = calculateTotalPoints(rubric);
+  
+  let feedback = `Rubric: ${rubric.name}\n\n`;
+
+  for (const criterion of rubric.criteria) {
+    if (criterion.selectedLevel !== null && criterion.selectedLevel !== undefined) {
+      const level = criterion.levels[criterion.selectedLevel];
+      const maxPoints = Math.max(...criterion.levels.map(l => l.points));
+      
+      feedback += `${criterion.name}: ${level.points}/${maxPoints}`;
+      
+      if (level.name) {
+        feedback += ` — ${level.name}`;
+      }
+      
+      if (level.description) {
+        feedback += ` (${level.description})`;
+      }
+      
+      if (criterion.comment) {
+        feedback += `\n  Note: ${criterion.comment}`;
+      }
+      
+      feedback += '\n\n';
+    }
+  }
+
+  feedback += `Total: ${earned}/${possible} points`;
+
+  return feedback;
+};
+

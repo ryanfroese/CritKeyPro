@@ -15,10 +15,12 @@
     "@emotion/styled": "^11.14.1",
     "@mui/icons-material": "^7.3.5",
     "@mui/material": "^7.3.5",
+    "katex": "^0.16.9",
     "papaparse": "^5.5.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-hotkeys-hook": "^5.2.1",
+    "react-katex": "^3.0.2",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

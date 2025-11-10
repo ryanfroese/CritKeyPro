@@ -4,20 +4,27 @@ import {
   Paper,
   Typography,
   Button,
-  ButtonGroup,
   TextField,
   Stack,
   Chip,
   Divider,
   Tooltip,
+  IconButton,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import {
   NavigateBefore,
   NavigateNext,
   Comment as CommentIcon,
+  Add as AddIcon,
+  Edit as EditIcon,
 } from '@mui/icons-material';
 import { useHotkeys } from 'react-hotkeys-hook';
 import useRubricStore from '../store/rubricStore';
+import { renderTextWithLatex } from '../utils/latex.jsx';
 
 const RubricDisplay = () => {
   const {
@@ -28,10 +35,22 @@ const RubricDisplay = () => {
     goToNextCriterion,
     goToPreviousCriterion,
     goToCriterion,
+    addLevel,
+    updateLevel,
+    deleteLevel,
   } = useRubricStore();
 
   const [commentFocused, setCommentFocused] = useState(false);
   const commentRef = useRef(null);
+  const [levelDialogOpen, setLevelDialogOpen] = useState(false);
+  const [levelDialogMode, setLevelDialogMode] = useState('add');
+  const [levelForm, setLevelForm] = useState({
+    name: '',
+    points: '',
+    description: '',
+  });
+  const [levelFormError, setLevelFormError] = useState('');
+  const [editingLevelIndex, setEditingLevelIndex] = useState(null);
 
   // Get criterion safely - will be null if no rubric
   const criterion = currentRubric?.criteria?.[currentCriterionIndex] || null;
@@ -53,9 +72,78 @@ const RubricDisplay = () => {
     updateComment(currentCriterionIndex, e.target.value);
   };
 
+  const handleOpenAddLevelDialog = () => {
+    setLevelDialogMode('add');
+    setLevelForm({
+      name: '',
+      points: '',
+      description: '',
+    });
+    setLevelFormError('');
+    setEditingLevelIndex(null);
+    setLevelDialogOpen(true);
+  };
+
+  const handleOpenEditLevelDialog = (index) => {
+    if (!criterion?.levels?.[index]) return;
+    const level = criterion.levels[index];
+    setLevelDialogMode('edit');
+    setLevelForm({
+      name: level.name || '',
+      points: level.points !== undefined && level.points !== null ? String(level.points) : '',
+      description: level.description || '',
+    });
+    setLevelFormError('');
+    setEditingLevelIndex(index);
+    setLevelDialogOpen(true);
+  };
+
+  const handleLevelFormChange = (field) => (event) => {
+    setLevelForm((prev) => ({
+      ...prev,
+      [field]: event.target.value,
+    }));
+  };
+
+  const handleCloseLevelDialog = () => {
+    setLevelDialogOpen(false);
+    setLevelFormError('');
+    setEditingLevelIndex(null);
+  };
+
+  const handleSubmitLevelDialog = () => {
+    if (!currentRubric) return;
+
+    const parsedPoints = Number(levelForm.points);
+    if (Number.isNaN(parsedPoints)) {
+      setLevelFormError('Please enter a numeric point value.');
+      return;
+    }
+
+    const payload = {
+      name: levelForm.name,
+      description: levelForm.description,
+      points: parsedPoints,
+    };
+
+    if (levelDialogMode === 'add') {
+      addLevel(currentCriterionIndex, payload);
+    } else if (levelDialogMode === 'edit' && editingLevelIndex !== null) {
+      updateLevel(currentCriterionIndex, editingLevelIndex, payload);
+    }
+
+    handleCloseLevelDialog();
+  };
+
+  const handleDeleteLevel = () => {
+    if (!currentRubric || editingLevelIndex === null) return;
+    deleteLevel(currentCriterionIndex, editingLevelIndex);
+    handleCloseLevelDialog();
+  };
+
   // All hooks must be called unconditionally - disable when no rubric
   const hasRubric = !!currentRubric;
-  const canUseHotkeys = hasRubric && !commentFocused;
+  const canUseHotkeys = hasRubric && !commentFocused && !levelDialogOpen;
 
   // Keyboard shortcuts (1-9 for levels) - combined into single hook
   useHotkeys(
@@ -95,13 +183,13 @@ const RubricDisplay = () => {
   useHotkeys(
     'c',
     (keyboardEvent) => {
-      if (hasRubric && !commentFocused) {
+      if (hasRubric && !commentFocused && !levelDialogOpen) {
         keyboardEvent.preventDefault();
         commentRef.current?.focus();
       }
     },
-    { enabled: hasRubric && !commentFocused, preventDefault: true },
-    [commentFocused, hasRubric]
+    { enabled: hasRubric && !commentFocused && !levelDialogOpen, preventDefault: true },
+    [commentFocused, hasRubric, levelDialogOpen]
   );
 
   // Escape to unfocus comment
@@ -180,76 +268,110 @@ const RubricDisplay = () => {
         <Typography variant="subtitle2" gutterBottom>
           Select Level (Hotkeys 1-{criterion.levels.length}):
         </Typography>
-        <ButtonGroup
-          orientation="vertical"
-          fullWidth
-          sx={{ mb: 2 }}
-        >
+        <Stack spacing={1} sx={{ mb: 2 }}>
           {criterion.levels.map((level, index) => {
             const isSelected = criterion.selectedLevel === index;
             return (
-              <Tooltip
-                key={index}
-                title={level.description || ''}
-                placement="right"
-                arrow
+              <Stack
+                key={`${level.name || 'level'}-${index}`}
+                direction="row"
+                spacing={1}
+                alignItems="center"
               >
-                <Button
-                  variant={isSelected ? 'contained' : 'outlined'}
-                  onClick={() => handleLevelSelect(index)}
-                  sx={{
-                    justifyContent: 'space-between',
-                    py: 1.5,
-                    textAlign: 'left',
-                    minHeight: 'auto',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <Stack 
-                    direction="row" 
-                    spacing={1} 
-                    alignItems="center"
-                    sx={{ 
-                      flex: 1,
-                      minWidth: 0,
-                      overflow: 'hidden',
-                    }}
+                <Box sx={{ flex: 1 }}>
+                  <Tooltip
+                    title={
+                      level.description ? (
+                        <Box sx={{ maxWidth: 320 }}>
+                          {renderTextWithLatex(level.description, {
+                            inline: false,
+                          })}
+                        </Box>
+                      ) : ''
+                    }
+                    placement="right"
+                    arrow
                   >
-                    <Chip
-                      label={index + 1}
-                      size="small"
-                      color={isSelected ? 'primary' : 'default'}
-                      sx={{ flexShrink: 0 }}
-                    />
-                    <Typography 
-                      variant="body2"
+                    <Button
+                      fullWidth
+                      variant={isSelected ? 'contained' : 'outlined'}
+                      onClick={() => handleLevelSelect(index)}
                       sx={{
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        flex: 1,
+                        textTransform: 'none',
+                        justifyContent: 'space-between',
+                        textAlign: 'left',
+                        minHeight: 'auto',
+                        py: 1.5,
                       }}
                     >
-                      {level.name || `Level ${index + 1}`}
-                    </Typography>
-                  </Stack>
-                  <Typography
-                    variant="body1"
-                    fontWeight="bold"
-                    color={isSelected ? 'inherit' : 'primary'}
-                    sx={{ 
-                      ml: 1,
-                      flexShrink: 0,
-                      whiteSpace: 'nowrap',
-                    }}
+                      <Stack
+                        direction="row"
+                        spacing={1}
+                        alignItems="center"
+                        sx={{
+                          flex: 1,
+                          minWidth: 0,
+                          overflow: 'hidden',
+                        }}
+                      >
+                        <Chip
+                          label={index + 1}
+                          size="small"
+                          color={isSelected ? 'primary' : 'default'}
+                          sx={{ flexShrink: 0 }}
+                        />
+                        <Typography
+                          variant="body2"
+                          sx={{
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            flex: 1,
+                          }}
+                        >
+                          {renderTextWithLatex(
+                            level.name || `Level ${index + 1}`,
+                            { inline: true }
+                          )}
+                        </Typography>
+                      </Stack>
+                      <Typography
+                        variant="body1"
+                        fontWeight="bold"
+                        color={isSelected ? 'inherit' : 'primary'}
+                        sx={{
+                          ml: 1,
+                          flexShrink: 0,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {level.points} pts
+                      </Typography>
+                    </Button>
+                  </Tooltip>
+                </Box>
+                <Tooltip title="Edit level" arrow>
+                  <IconButton
+                    size="small"
+                    color="primary"
+                    onClick={() => handleOpenEditLevelDialog(index)}
+                    aria-label={`Edit level ${level.name || index + 1}`}
                   >
-                    {level.points} pts
-                  </Typography>
-                </Button>
-              </Tooltip>
+                    <EditIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
             );
           })}
-        </ButtonGroup>
+        </Stack>
+        <Button
+          variant="outlined"
+          startIcon={<AddIcon />}
+          onClick={handleOpenAddLevelDialog}
+          sx={{ alignSelf: 'flex-start', mb: 2 }}
+        >
+          Add Item
+        </Button>
 
         {/* Comment Field */}
         <Stack direction="row" spacing={1} alignItems="flex-start">
@@ -301,6 +423,90 @@ const RubricDisplay = () => {
           })}
         </Stack>
       </Paper>
+      <Dialog
+        open={levelDialogOpen}
+        onClose={handleCloseLevelDialog}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>
+          {levelDialogMode === 'add' ? 'Add Rubric Level' : 'Edit Rubric Level'}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              label="Level Name"
+              value={levelForm.name}
+              onChange={handleLevelFormChange('name')}
+              placeholder="e.g., Exceeds expectations"
+              autoFocus
+            />
+            <TextField
+              label="Points"
+              type="number"
+              value={levelForm.points}
+              onChange={handleLevelFormChange('points')}
+              error={Boolean(levelFormError)}
+              helperText={levelFormError || 'Enter a whole number or decimal value'}
+            />
+            <TextField
+              label="Description"
+              value={levelForm.description}
+              onChange={handleLevelFormChange('description')}
+              multiline
+              minRows={3}
+              placeholder="Optional description for this level"
+            />
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2">Preview</Typography>
+              <Paper
+                variant="outlined"
+                sx={{
+                  mt: 1,
+                  p: 2,
+                  backgroundColor: 'grey.50',
+                }}
+              >
+                <Typography
+                  component="div"
+                  variant="body1"
+                  fontWeight="bold"
+                  sx={{ mb: levelForm.description ? 1 : 0 }}
+                >
+                  {renderTextWithLatex(
+                    levelForm.name || 'Level name preview',
+                    { inline: true }
+                  )}
+                </Typography>
+                <Box component="div">
+                  {levelForm.description ? (
+                    renderTextWithLatex(levelForm.description, { inline: false })
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      Description preview will appear here.
+                    </Typography>
+                  )}
+                </Box>
+              </Paper>
+            </Box>
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ justifyContent: 'space-between' }}>
+          {levelDialogMode === 'edit' ? (
+            <Button color="error" onClick={handleDeleteLevel}>
+              Delete Level
+            </Button>
+          ) : (
+            <Box />
+          )}
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <Button onClick={handleCloseLevelDialog}>Cancel</Button>
+            <Button variant="contained" onClick={handleSubmitLevelDialog}>
+              {levelDialogMode === 'add' ? 'Add Level' : 'Save Changes'}
+            </Button>
+          </Box>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

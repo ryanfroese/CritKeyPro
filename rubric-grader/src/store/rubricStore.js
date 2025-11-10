@@ -123,6 +123,137 @@ const useRubricStore = create((set, get) => ({
     get().saveSession();
   },
 
+  addLevel: (criterionIndex, levelData) => {
+    const { currentRubric } = get();
+    if (!currentRubric) return;
+
+    const updatedRubric = { ...currentRubric };
+    const updatedCriteria = [...updatedRubric.criteria];
+    const criterion = updatedCriteria[criterionIndex];
+    if (!criterion) return;
+
+    const levels = [...(criterion.levels || [])];
+    const selectedLevelRef =
+      criterion.selectedLevel !== null && criterion.selectedLevel !== undefined
+        ? levels[criterion.selectedLevel]
+        : null;
+
+    const newLevel = {
+      name: levelData?.name?.trim() || '',
+      description: levelData?.description?.trim() || '',
+      points: Number(levelData?.points) || 0,
+    };
+
+    levels.push(newLevel);
+    levels.sort((a, b) => b.points - a.points);
+
+    const nextSelectedLevel =
+      selectedLevelRef && levels.includes(selectedLevelRef)
+        ? levels.indexOf(selectedLevelRef)
+        : selectedLevelRef === null
+          ? null
+          : null;
+
+    updatedCriteria[criterionIndex] = {
+      ...criterion,
+      levels,
+      selectedLevel: nextSelectedLevel,
+    };
+
+    updatedRubric.criteria = updatedCriteria;
+    set({ currentRubric: updatedRubric });
+    get().saveSession();
+  },
+
+  updateLevel: (criterionIndex, levelIndex, updates) => {
+    const { currentRubric } = get();
+    if (!currentRubric) return;
+
+    const updatedRubric = { ...currentRubric };
+    const updatedCriteria = [...updatedRubric.criteria];
+    const criterion = updatedCriteria[criterionIndex];
+    if (!criterion) return;
+
+    const levels = [...(criterion.levels || [])];
+    if (!levels[levelIndex]) return;
+
+    levels[levelIndex] = {
+      ...levels[levelIndex],
+      ...updates,
+      name: updates?.name?.trim() ?? levels[levelIndex].name ?? '',
+      description: updates?.description?.trim() ?? levels[levelIndex].description ?? '',
+      points:
+        updates?.points !== undefined && updates?.points !== null
+          ? Number(updates.points)
+          : Number(levels[levelIndex].points) || 0,
+    };
+
+    const selectedLevelRef =
+      criterion.selectedLevel !== null && criterion.selectedLevel !== undefined
+        ? levels[criterion.selectedLevel]
+        : null;
+
+    const editedLevelRef = levels[levelIndex];
+    levels.sort((a, b) => b.points - a.points);
+
+    let nextSelectedLevel = null;
+    if (selectedLevelRef && levels.includes(selectedLevelRef)) {
+      nextSelectedLevel = levels.indexOf(selectedLevelRef);
+    }
+
+    updatedCriteria[criterionIndex] = {
+      ...criterion,
+      levels,
+      selectedLevel: nextSelectedLevel,
+    };
+
+    updatedRubric.criteria = updatedCriteria;
+    set({ currentRubric: updatedRubric });
+    get().saveSession();
+
+    return levels.indexOf(editedLevelRef);
+  },
+
+  deleteLevel: (criterionIndex, levelIndex) => {
+    const { currentRubric } = get();
+    if (!currentRubric) return;
+
+    const updatedRubric = { ...currentRubric };
+    const updatedCriteria = [...updatedRubric.criteria];
+    const criterion = updatedCriteria[criterionIndex];
+    if (!criterion) return;
+
+    const levels = [...(criterion.levels || [])];
+    if (!levels[levelIndex]) return;
+
+    levels.splice(levelIndex, 1);
+
+    let nextSelectedLevel = null;
+    const currentSelected = criterion.selectedLevel;
+
+    if (currentSelected !== null && currentSelected !== undefined) {
+      if (levels.length === 0) {
+        nextSelectedLevel = null;
+      } else if (currentSelected === levelIndex) {
+        nextSelectedLevel = null;
+      } else if (currentSelected > levelIndex) {
+        nextSelectedLevel = currentSelected - 1;
+      } else {
+        nextSelectedLevel = currentSelected;
+      }
+    }
+
+    updatedCriteria[criterionIndex] = {
+      ...criterion,
+      levels,
+      selectedLevel: nextSelectedLevel,
+    };
+
+    updatedRubric.criteria = updatedCriteria;
+    set({ currentRubric: updatedRubric });
+    get().saveSession();
+  },
+
   // Navigation
   goToNextCriterion: () => {
     const { currentRubric, currentCriterionIndex } = get();

@@ -120,10 +120,15 @@ export const calculateTotalPoints = (rubric) => {
  * @param {Object} rubric - Rubric with selected levels and comments
  * @returns {string} Formatted feedback text
  */
+const inlineLatexPattern = /\$\$([\s\S]+?)\$\$/g;
+
+const toInlineLatex = (text = '') =>
+  text.replace(inlineLatexPattern, (_, expr) => `\\(${expr}\\)`);
+
 export const generateFeedbackText = (rubric) => {
   const { earned, possible } = calculateTotalPoints(rubric);
   
-  let feedback = `Rubric: ${rubric.name}\n\n`;
+  let feedback = `Rubric: ${toInlineLatex(rubric.name)}\n\n`;
 
   for (const criterion of rubric.criteria) {
     if (criterion.selectedLevel !== null && criterion.selectedLevel !== undefined) {
@@ -133,15 +138,15 @@ export const generateFeedbackText = (rubric) => {
       feedback += `${criterion.name}: ${level.points}/${maxPoints}`;
       
       if (level.name) {
-        feedback += ` — ${level.name}`;
+        feedback += ` — ${toInlineLatex(level.name)}`;
       }
       
       if (level.description) {
-        feedback += ` (${level.description})`;
+        feedback += ` (${toInlineLatex(level.description)})`;
       }
       
       if (criterion.comment) {
-        feedback += `\n  Note: ${criterion.comment}`;
+        feedback += `\n  Note: ${toInlineLatex(criterion.comment)}`;
       }
       
       feedback += '\n\n';
@@ -151,5 +156,69 @@ export const generateFeedbackText = (rubric) => {
   feedback += `Total: ${earned}/${possible} points`;
 
   return feedback;
+};
+
+/**
+ * Generate Canvas-compatible CSV from one or more rubrics
+ * @param {Array<Object>} rubrics - Array of rubric objects
+ * @returns {string} CSV string
+ */
+export const generateCanvasCSV = (rubrics = []) => {
+  if (!Array.isArray(rubrics) || rubrics.length === 0) {
+    return '';
+  }
+
+  // Determine the maximum number of levels across all criteria
+  const maxLevels = rubrics.reduce((max, rubric) => {
+    const rubricMax = (rubric.criteria || []).reduce((critMax, criterion) => {
+      return Math.max(critMax, (criterion.levels || []).length);
+    }, 0);
+    return Math.max(max, rubricMax);
+  }, 0);
+
+  const header = [
+    'Rubric Name',
+    'Criteria Name',
+    'Criteria Description',
+    'Criteria Enable Range',
+  ];
+
+  for (let i = 0; i < maxLevels; i += 1) {
+    header.push('Rating Name', 'Rating Description', 'Rating Points');
+  }
+
+  const rows = [];
+
+  rubrics.forEach((rubric) => {
+    (rubric.criteria || []).forEach((criterion) => {
+      const row = [
+        rubric.name || 'Untitled Rubric',
+        criterion.name || 'Untitled Criterion',
+        criterion.description || '',
+        criterion.enableRange || '',
+      ];
+
+      (criterion.levels || []).forEach((level) => {
+        row.push(
+          level.name || '',
+          level.description || '',
+          level.points !== undefined && level.points !== null
+            ? level.points
+            : ''
+        );
+      });
+
+      while (row.length < header.length) {
+        row.push('');
+      }
+
+      rows.push(row);
+    });
+  });
+
+  return Papa.unparse({
+    fields: header,
+    data: rows,
+  });
 };
 

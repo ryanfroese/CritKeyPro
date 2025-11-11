@@ -352,15 +352,20 @@ const RubricDisplay = () => {
     [commentFocused, hasRubric, levelDialogOpen]
   );
 
-  // Escape to unfocus comment
+  // Escape to unfocus inputs
   useHotkeys(
     'escape',
-    () => {
+    (event) => {
+      event.preventDefault();
+      const activeEl = document.activeElement;
+      if (activeEl && typeof activeEl.blur === 'function') {
+        activeEl.blur();
+      }
       if (commentFocused) {
-        commentRef.current?.blur();
+        setCommentFocused(false);
       }
     },
-    { enabled: commentFocused },
+    { enableOnFormTags: true },
     [commentFocused]
   );
 
@@ -459,7 +464,7 @@ const RubricDisplay = () => {
                         </Box>
                       ) : ''
                     }
-                    placement="right"
+                    placement="bottom"
                     arrow
                   >
                     <Button

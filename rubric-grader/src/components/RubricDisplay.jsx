@@ -43,6 +43,9 @@ const calculatePossiblePoints = (criteria = []) =>
     return Number.isFinite(maxPoints) ? sum + maxPoints : sum;
   }, 0);
 
+const cloneLevels = (levels = []) =>
+  levels.map((level) => ({ ...level }));
+
 const cloneCriteria = (criteria = []) =>
   criteria.map((criterion) => ({
     ...criterion,
@@ -70,6 +73,7 @@ const RubricDisplay = () => {
     deleteLevel,
     replaceCriteria,
     updateFeedbackLabel,
+    autoAdvance,
   } = useRubricStore();
 
   const [commentFocused, setCommentFocused] = useState(false);
@@ -87,6 +91,7 @@ const RubricDisplay = () => {
   const [draftCriteria, setDraftCriteria] = useState([]);
   const [draggedCriterionIndex, setDraggedCriterionIndex] = useState(null);
   const [expandedDescriptions, setExpandedDescriptions] = useState({});
+  const [editingLevels, setEditingLevels] = useState({});
 
   // Get criterion safely - will be null if no rubric
   const criterion = currentRubric?.criteria?.[currentCriterionIndex] || null;
@@ -101,11 +106,13 @@ const RubricDisplay = () => {
     if (!currentRubric) return;
     selectLevel(currentCriterionIndex, levelIndex);
     // Auto-advance to next criterion after selection
-    setTimeout(() => {
-      if (currentCriterionIndex < totalCriteria - 1) {
-        goToNextCriterion();
-      }
-    }, 150);
+    if (autoAdvance) {
+      setTimeout(() => {
+        if (currentCriterionIndex < totalCriteria - 1) {
+          goToNextCriterion();
+        }
+      }, 150);
+    }
   };
 
   const handleCommentChange = (e) => {
@@ -190,6 +197,7 @@ const RubricDisplay = () => {
       initialExpanded[idx] = false;
     });
     setExpandedDescriptions(initialExpanded);
+    setEditingLevels({});
   };
   const toggleDescription = (index) => () => {
     setExpandedDescriptions((prev) => ({
@@ -240,10 +248,122 @@ const RubricDisplay = () => {
       });
       return updated;
     });
+    setEditingLevels((prev) => {
+      const next = {};
+      Object.keys(prev).forEach((key) => {
+        const idx = Number(key);
+        if (idx <= index) {
+          next[idx] = prev[idx];
+        } else {
+          next[idx + 1] = prev[idx];
+        }
+      });
+      return next;
+    });
   };
 
   const handleDeleteCriterion = (index) => {
     setDraftCriteria((prev) => prev.filter((_, idx) => idx !== index));
+    setEditingLevels((prev) => {
+      const next = {};
+      Object.keys(prev).forEach((key) => {
+        const idx = Number(key);
+        if (idx === index) return;
+        if (idx > index) {
+          next[idx - 1] = prev[idx];
+        } else {
+          next[idx] = prev[idx];
+        }
+      });
+      return next;
+    });
+  };
+
+  const handleOpenLevelsEditor = (index) => () => {
+    setEditingLevels((prev) => {
+      const next = { ...prev };
+      if (next[index]) {
+        delete next[index];
+      } else {
+        next[index] = cloneLevels(draftCriteria[index]?.levels || []);
+      }
+      return next;
+    });
+  };
+
+  const handleLevelFieldChange = (criterionIndex, levelIndex, field) => (event) => {
+    const value = event.target.value;
+    setEditingLevels((prev) => {
+      const cloned = { ...prev };
+      const targetLevels = cloneLevels(cloned[criterionIndex] || cloneLevels(draftCriteria[criterionIndex]?.levels || []));
+      if (!targetLevels[levelIndex]) {
+        targetLevels[levelIndex] = { name: '', description: '', points: 0 };
+      }
+      if (field === 'points') {
+        targetLevels[levelIndex][field] = value;
+      } else {
+        targetLevels[levelIndex][field] = value;
+      }
+      cloned[criterionIndex] = targetLevels;
+      return cloned;
+    });
+  };
+
+  const handleAddLevelInline = (criterionIndex) => () => {
+    setEditingLevels((prev) => {
+      const cloned = { ...prev };
+      const target = cloneLevels(cloned[criterionIndex] || draftCriteria[criterionIndex]?.levels || []);
+      target.push({ name: '', points: '', description: '' });
+      cloned[criterionIndex] = target;
+      return cloned;
+    });
+  };
+
+  const handleRemoveLevelInline = (criterionIndex, levelIndex) => () => {
+    setEditingLevels((prev) => {
+      const cloned = { ...prev };
+      const target = cloneLevels(cloned[criterionIndex] || draftCriteria[criterionIndex]?.levels || []);
+      target.splice(levelIndex, 1);
+      cloned[criterionIndex] = target;
+      return cloned;
+    });
+  };
+
+  const sanitizeLevels = (levels = []) =>
+    levels
+      .map((level) => ({
+        name: level?.name || '',
+        description: level?.description || '',
+        points: level?.points !== undefined && level?.points !== null && level.points !== ''
+          ? Number(level.points)
+          : 0,
+      }))
+      .filter((level) => level.name || level.description || level.points !== 0);
+
+  const handleCancelLevelsEdit = (index) => () => {
+    setEditingLevels((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+  };
+
+  const handleSaveLevelsEdit = (index) => () => {
+    setDraftCriteria((prev) => {
+      const updated = cloneCriteria(prev);
+      if (!updated[index]) return prev;
+      const newLevels = sanitizeLevels(editingLevels[index] || []);
+      updated[index] = {
+        ...updated[index],
+        levels: newLevels,
+      };
+      return updated;
+    });
+    setEditingLevels((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
   };
 
   const handleMoveCriterion = (index, direction) => () => {
@@ -254,6 +374,20 @@ const RubricDisplay = () => {
       const [removed] = updated.splice(index, 1);
       updated.splice(targetIndex, 0, removed);
       return updated;
+    });
+    setEditingLevels((prev) => {
+      const next = {};
+      Object.keys(prev).forEach((key) => {
+        const idx = Number(key);
+        if (idx === index) {
+          next[index + direction] = prev[idx];
+        } else if (idx === index + direction) {
+          next[idx - direction] = prev[idx];
+        } else {
+          next[idx] = prev[idx];
+        }
+      });
+      return next;
     });
   };
 
@@ -337,6 +471,18 @@ const RubricDisplay = () => {
     },
     { enabled: canUseHotkeys },
     [commentFocused, canUseHotkeys]
+  );
+
+  useHotkeys(
+    'space',
+    (event) => {
+      event.preventDefault();
+      if (!autoAdvance && canUseHotkeys) {
+        goToNextCriterion();
+      }
+    },
+    { enabled: !autoAdvance && canUseHotkeys },
+    [autoAdvance, canUseHotkeys]
   );
 
   // Focus comment hotkey
@@ -816,7 +962,7 @@ const RubricDisplay = () => {
                           </IconButton>
                           <Button
                             size="small"
-                            onClick={handleEditLevelsFromCriteria(index)}
+                            onClick={handleOpenLevelsEditor(index)}
                             sx={{ textTransform: 'none' }}
                           >
                             Edit Levels
@@ -868,6 +1014,76 @@ const RubricDisplay = () => {
                           />
                         </Collapse>
                       </Box>
+                      <Collapse in={Boolean(editingLevels[index])} unmountOnExit>
+                        <Paper
+                          variant="outlined"
+                          sx={{ p: 1.25, backgroundColor: 'grey.50' }}
+                        >
+                          <Stack spacing={1}>
+                            <Typography variant="subtitle2">Levels</Typography>
+                            {(editingLevels[index] || []).length === 0 && (
+                              <Typography variant="body2" color="text.secondary">
+                                No levels yet. Add one below.
+                              </Typography>
+                            )}
+                            {(editingLevels[index] || []).map((level, levelIndex) => (
+                              <Paper key={`crit-${index}-level-${levelIndex}`} variant="outlined" sx={{ p: 1 }}>
+                                <Stack spacing={0.75}>
+                                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ xs: 'flex-start', sm: 'center' }}>
+                                    <TextField
+                                      label={`Level ${levelIndex + 1} Name`}
+                                      value={level.name || ''}
+                                      onChange={handleLevelFieldChange(index, levelIndex, 'name')}
+                                      size="small"
+                                      fullWidth
+                                    />
+                                    <TextField
+                                      label="Points"
+                                      type="number"
+                                      value={level.points}
+                                      onChange={handleLevelFieldChange(index, levelIndex, 'points')}
+                                      size="small"
+                                      sx={{ width: { xs: '100%', sm: 120 } }}
+                                    />
+                                    <IconButton
+                                      size="small"
+                                      color="error"
+                                      onClick={handleRemoveLevelInline(index, levelIndex)}
+                                      aria-label="Remove level"
+                                    >
+                                      <DeleteIcon fontSize="small" />
+                                    </IconButton>
+                                  </Stack>
+                                  <TextField
+                                    label="Description"
+                                    value={level.description || ''}
+                                    onChange={handleLevelFieldChange(index, levelIndex, 'description')}
+                                    multiline
+                                    minRows={2}
+                                    size="small"
+                                    fullWidth
+                                  />
+                                </Stack>
+                              </Paper>
+                            ))}
+                            <Button
+                              variant="text"
+                              size="small"
+                              startIcon={<AddIcon fontSize="small" />}
+                              onClick={handleAddLevelInline(index)}
+                              sx={{ textTransform: 'none', alignSelf: 'flex-start', px: 0 }}
+                            >
+                              Add Level
+                            </Button>
+                            <Stack direction="row" spacing={1} justifyContent="flex-end">
+                              <Button onClick={handleCancelLevelsEdit(index)}>Cancel</Button>
+                              <Button variant="contained" onClick={handleSaveLevelsEdit(index)}>
+                                Save Levels
+                              </Button>
+                            </Stack>
+                          </Stack>
+                        </Paper>
+                      </Collapse>
                     </Stack>
                     <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 0.15, mb: -1 }}>
                       <Button

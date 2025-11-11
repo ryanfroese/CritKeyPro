@@ -135,7 +135,7 @@ export const generateFeedbackText = (rubric) => {
       const level = criterion.levels[criterion.selectedLevel];
       const maxPoints = Math.max(...criterion.levels.map(l => l.points));
 
-      feedback += `${level.points}/${maxPoints} — ${criterion.name}`;
+      feedback += `${level.points}/${maxPoints} — ${toInlineLatex(criterion.name)}`;
 
       if (level.name) {
         feedback += ` (${toInlineLatex(level.name)})`;

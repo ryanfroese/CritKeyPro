@@ -15,6 +15,7 @@ import {
   FormControlLabel,
   Checkbox,
   Alert,
+  Switch,
 } from '@mui/material';
 import { Settings as SettingsIcon, ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
 import useRubricStore from '../store/rubricStore';
@@ -28,7 +29,7 @@ const SetupDrawer = () => {
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [selectedRubricNames, setSelectedRubricNames] = useState([]);
 
-  const { availableRubrics, currentCourse } = useRubricStore();
+  const { availableRubrics, currentCourse, autoAdvance, setAutoAdvance } = useRubricStore();
 
   const sortedRubrics = useMemo(() => {
     return [...availableRubrics].sort((a, b) => a.name.localeCompare(b.name));
@@ -124,6 +125,17 @@ const SetupDrawer = () => {
           <Box sx={{ py: 1 }}>
             <CourseSelector />
             <RubricSelector />
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={autoAdvance}
+                  onChange={(event) => setAutoAdvance(event.target.checked)}
+                  size="small"
+                />
+              }
+              label="Auto advance after selection"
+              sx={{ my: 1 }}
+            />
             <Button
               fullWidth
               variant="outlined"

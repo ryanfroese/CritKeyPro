@@ -61,10 +61,10 @@ function App() {
           <Stack 
             direction={{ xs: 'column', md: 'row' }} 
             spacing={2} 
-            sx={{ flex: 1, overflow: 'auto', minHeight: 0 }}
+            sx={{ flex: 1, minHeight: 0 }}
           >
             {/* Left Panel - Setup */}
-            <Box sx={{ width: { xs: '100%', md: '33.333%' }, position: 'sticky', top: 0, alignSelf: 'flex-start', maxHeight: 'calc(100vh - 200px)', overflow: 'auto' }}>
+            <Box sx={{ width: { xs: '100%', md: '33.333%' } }}>
               <SetupDrawer />
               <TotalPoints />
             </Box>

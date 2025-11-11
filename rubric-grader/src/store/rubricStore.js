@@ -17,6 +17,7 @@ const useRubricStore = create((set, get) => ({
   currentCriterionIndex: 0,
   availableCourses: [],
   availableRubrics: [],
+  autoAdvance: true,
 
   // Initialize store
   initialize: () => {
@@ -38,6 +39,7 @@ const useRubricStore = create((set, get) => ({
           ...session.currentRubric,
         },
         currentCriterionIndex: session.currentCriterionIndex || 0,
+        autoAdvance: session.autoAdvance !== undefined ? session.autoAdvance : true,
       });
       
       get().loadRubricsForCourse(session.currentCourse);
@@ -85,14 +87,14 @@ const useRubricStore = create((set, get) => ({
     if (!currentCourse) {
       throw new Error('Please select a course first');
     }
-
+    
     const rubricWithLabel = {
       feedbackLabel: '',
       ...rubric,
     };
     saveRubricToStorage(currentCourse, rubricWithLabel);
     get().loadRubricsForCourse(currentCourse);
-
+    
     // Auto-select the newly imported rubric
     set({ currentRubric: rubricWithLabel, currentCriterionIndex: 0 });
     get().saveSession();
@@ -110,20 +112,6 @@ const useRubricStore = create((set, get) => ({
     set({ currentRubric: updatedRubric });
     get().saveSession();
     get().persistCurrentRubric();
-  },
-
-  deleteRubric: (rubricName) => {
-    const { currentCourse } = get();
-    if (!currentCourse) return;
-    
-    deleteRubricFromStorage(currentCourse, rubricName);
-    get().loadRubricsForCourse(currentCourse);
-    
-    // Clear current rubric if it was deleted
-    if (get().currentRubric?.name === rubricName) {
-      set({ currentRubric: null, currentCriterionIndex: 0 });
-      get().saveSession();
-    }
   },
 
   // Grading actions
@@ -354,13 +342,19 @@ const useRubricStore = create((set, get) => ({
     }
   },
 
+  setAutoAdvance: (value) => {
+    set({ autoAdvance: value });
+    get().saveSession();
+  },
+
   // Session management
   saveSession: () => {
-    const { currentCourse, currentRubric, currentCriterionIndex } = get();
+    const { currentCourse, currentRubric, currentCriterionIndex, autoAdvance } = get();
     saveCurrentSession({
       currentCourse,
       currentRubric,
       currentCriterionIndex,
+      autoAdvance,
     });
   },
 
@@ -401,16 +395,17 @@ const useRubricStore = create((set, get) => ({
     const { currentRubric, currentCourse, availableRubrics, loadRubricsForCourse } = get();
     if (!currentRubric || !currentCourse) return;
 
-    saveRubricToStorage(currentCourse, currentRubric);
+    const rubricCopy = JSON.parse(JSON.stringify({
+      feedbackLabel: currentRubric.feedbackLabel || '',
+      ...currentRubric,
+    }));
+
+    saveRubricToStorage(currentCourse, rubricCopy);
 
     const updatedRubrics = [...availableRubrics];
     const existingIndex = updatedRubrics.findIndex(
       (rubric) => rubric.name === currentRubric.name
     );
-    const rubricCopy = JSON.parse(JSON.stringify({
-      feedbackLabel: currentRubric.feedbackLabel || '',
-      ...currentRubric,
-    }));
 
     if (existingIndex >= 0) {
       updatedRubrics[existingIndex] = rubricCopy;

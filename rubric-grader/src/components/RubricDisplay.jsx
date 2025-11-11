@@ -69,6 +69,7 @@ const RubricDisplay = () => {
     updateLevel,
     deleteLevel,
     replaceCriteria,
+    updateFeedbackLabel,
   } = useRubricStore();
 
   const [commentFocused, setCommentFocused] = useState(false);
@@ -406,6 +407,16 @@ const RubricDisplay = () => {
 
       {/* Current Criterion */}
       <Paper sx={{ p: 3 }}>
+        {currentCriterionIndex === 0 && (
+          <TextField
+            label="Student Name (optional)"
+            value={currentRubric.feedbackLabel || ''}
+            onChange={(e) => updateFeedbackLabel(e.target.value)}
+            size="small"
+            fullWidth
+            sx={{ mb: 2 }}
+          />
+        )}
         <Typography variant="h6" gutterBottom>
           {criterion.name}
         </Typography>

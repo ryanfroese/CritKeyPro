@@ -127,13 +127,14 @@ export const clearCurrentSession = () => {
  * @param {string} feedbackText
  * @param {string} rubricName
  */
-export const saveFeedbackToHistory = (feedbackText, rubricName) => {
+export const saveFeedbackToHistory = (feedbackText, rubricName, label) => {
   try {
     const history = getFeedbackHistory();
     const newEntry = {
       id: Date.now().toString(),
       text: feedbackText,
       rubricName,
+      label: label || rubricName,
       timestamp: new Date().toISOString(),
     };
     

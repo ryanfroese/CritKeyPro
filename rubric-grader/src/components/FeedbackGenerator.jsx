@@ -60,8 +60,11 @@ const FeedbackGenerator = () => {
       console.error('Failed to copy:', err);
     }
     
+    const label = currentRubric.feedbackLabel?.trim();
+    const historyLabel = label || currentRubric.name;
+
     // Save to history
-    saveFeedbackToHistory(text, currentRubric.name);
+    saveFeedbackToHistory(text, currentRubric.name, historyLabel);
     loadFeedbackHistory();
   };
 
@@ -206,12 +209,17 @@ const FeedbackGenerator = () => {
               sx={{ whiteSpace: 'normal' }}
             >
               <ListItemText
-                primary={feedback.rubricName}
+                primary={feedback.label || feedback.rubricName}
                 secondary={
                   <>
                     <Typography variant="caption" component="span" display="block">
                       {new Date(feedback.timestamp).toLocaleString()}
                     </Typography>
+                    {feedback.label && feedback.label !== feedback.rubricName && (
+                      <Typography variant="caption" component="span" display="block">
+                        Rubric: {feedback.rubricName}
+                      </Typography>
+                    )}
                     <Typography
                       variant="caption"
                       component="span"

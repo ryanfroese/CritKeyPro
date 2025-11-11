@@ -134,21 +134,21 @@ export const generateFeedbackText = (rubric) => {
     if (criterion.selectedLevel !== null && criterion.selectedLevel !== undefined) {
       const level = criterion.levels[criterion.selectedLevel];
       const maxPoints = Math.max(...criterion.levels.map(l => l.points));
-      
-      feedback += `${criterion.name}: ${level.points}/${maxPoints}`;
-      
+
+      feedback += `${level.points}/${maxPoints} — ${criterion.name}`;
+
       if (level.name) {
-        feedback += ` — ${toInlineLatex(level.name)}`;
+        feedback += ` (${toInlineLatex(level.name)})`;
       }
-      
+
       if (level.description) {
-        feedback += ` (${toInlineLatex(level.description)})`;
+        feedback += `: ${toInlineLatex(level.description)}`;
       }
-      
+
       if (criterion.comment) {
         feedback += `\n  Note: ${toInlineLatex(criterion.comment)}`;
       }
-      
+
       feedback += '\n\n';
     }
   }

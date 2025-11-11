@@ -33,7 +33,10 @@ const useRubricStore = create((set, get) => ({
       set({
         availableCourses: courses,
         currentCourse: session.currentCourse,
-        currentRubric: session.currentRubric,
+        currentRubric: session.currentRubric && {
+          feedbackLabel: '',
+          ...session.currentRubric,
+        },
         currentCriterionIndex: session.currentCriterionIndex || 0,
       });
       
@@ -69,6 +72,9 @@ const useRubricStore = create((set, get) => ({
     if (rubric) {
       // Create a fresh copy for grading
       const rubricCopy = JSON.parse(JSON.stringify(rubric));
+      if (typeof rubricCopy.feedbackLabel !== 'string') {
+        rubricCopy.feedbackLabel = '';
+      }
       set({ currentRubric: rubricCopy, currentCriterionIndex: 0 });
       get().saveSession();
     }
@@ -79,13 +85,31 @@ const useRubricStore = create((set, get) => ({
     if (!currentCourse) {
       throw new Error('Please select a course first');
     }
-    
-    saveRubricToStorage(currentCourse, rubric);
+
+    const rubricWithLabel = {
+      feedbackLabel: '',
+      ...rubric,
+    };
+    saveRubricToStorage(currentCourse, rubricWithLabel);
     get().loadRubricsForCourse(currentCourse);
-    
+
     // Auto-select the newly imported rubric
-    set({ currentRubric: rubric, currentCriterionIndex: 0 });
+    set({ currentRubric: rubricWithLabel, currentCriterionIndex: 0 });
     get().saveSession();
+  },
+
+  updateFeedbackLabel: (label) => {
+    const { currentRubric } = get();
+    if (!currentRubric) return;
+
+    const updatedRubric = {
+      ...currentRubric,
+      feedbackLabel: label,
+    };
+
+    set({ currentRubric: updatedRubric });
+    get().saveSession();
+    get().persistCurrentRubric();
   },
 
   deleteRubric: (rubricName) => {
@@ -381,7 +405,10 @@ const useRubricStore = create((set, get) => ({
     const existingIndex = updatedRubrics.findIndex(
       (rubric) => rubric.name === currentRubric.name
     );
-    const rubricCopy = JSON.parse(JSON.stringify(currentRubric));
+    const rubricCopy = JSON.parse(JSON.stringify({
+      feedbackLabel: currentRubric.feedbackLabel || '',
+      ...currentRubric,
+    }));
 
     if (existingIndex >= 0) {
       updatedRubrics[existingIndex] = rubricCopy;

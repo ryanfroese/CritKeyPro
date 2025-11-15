@@ -31,6 +31,7 @@ import useRubricStore from '../store/rubricStore';
 import useCanvasStore from '../store/canvasStore';
 import { generateFeedbackText } from '../utils/csvParser';
 import { saveFeedbackToHistory, getFeedbackHistory } from '../utils/localStorage';
+import { useHotkeyConfig } from '../hooks/useHotkeyConfig';
 
 const FeedbackGenerator = () => {
   const [open, setOpen] = useState(false);
@@ -41,8 +42,8 @@ const FeedbackGenerator = () => {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [submittingToCanvas, setSubmittingToCanvas] = useState(false);
   
-  const { currentRubric, getTotalPoints, resetGrading } = useRubricStore();
-  const { selectedSubmission, submitGrade, nextSubmission } = useCanvasStore();
+  const { currentRubric, getTotalPoints, resetGrading, saveRubricForSubmission } = useRubricStore();
+  const { selectedSubmission, selectedAssignment, saveRubricScoreForSubmission, nextSubmission } = useCanvasStore();
 
   const loadFeedbackHistory = () => {
     setFeedbackHistory(getFeedbackHistory());
@@ -126,16 +127,41 @@ const FeedbackGenerator = () => {
   };
 
   const handleSubmitToCanvas = async () => {
-    if (!selectedSubmission || !currentRubric) {
+    if (!selectedSubmission || !selectedAssignment || !currentRubric) {
       return;
     }
 
     setSubmittingToCanvas(true);
     try {
       const { earned, possible } = getTotalPoints();
-      const feedback = feedbackText || generateFeedbackText(currentRubric);
       
-      await submitGrade(`${earned}/${possible}`, feedback);
+      // Generate feedback if not already generated
+      let feedback = feedbackText;
+      if (!feedback) {
+        feedback = generateFeedbackText(currentRubric);
+        setFeedbackText(feedback);
+        
+        // Copy to clipboard
+        try {
+          await navigator.clipboard.writeText(feedback);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } catch (err) {
+          console.error('Failed to copy:', err);
+        }
+        
+        // Save to history
+        const label = currentRubric.feedbackLabel?.trim();
+        const historyLabel = label || currentRubric.name;
+        saveFeedbackToHistory(feedback, currentRubric.name, historyLabel);
+      }
+      
+      // Save rubric state before staging
+      const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+      saveRubricForSubmission(selectedAssignment.id, submissionId);
+      
+      // Stage the grade (don't push to Canvas yet)
+      saveRubricScoreForSubmission(`${earned}/${possible}`, feedback);
       
       // Show success message
       setSnackbarOpen(true);
@@ -146,27 +172,29 @@ const FeedbackGenerator = () => {
         resetGrading();
       }, 1000);
     } catch (error) {
-      console.error('Failed to submit to Canvas:', error);
-      alert(`Failed to submit grade to Canvas: ${error.message}`);
+      console.error('Failed to stage grade:', error);
+      alert(`Failed to stage grade: ${error.message}`);
     } finally {
       setSubmittingToCanvas(false);
     }
   };
 
-  // Ctrl/Cmd + Enter to generate feedback
-  useHotkeys('ctrl+enter, meta+enter', () => {
+  const hotkeys = useHotkeyConfig();
+
+  // Generate feedback hotkey
+  useHotkeys(hotkeys.generateFeedback, () => {
     if (currentRubric && !open) {
       handleGenerateHotkey();
     }
-  }, [currentRubric, open]);
+  }, [currentRubric, open, hotkeys.generateFeedback]);
 
-  // Ctrl/Cmd + R to reset
-  useHotkeys('ctrl+r, meta+r', (e) => {
+  // Reset hotkey
+  useHotkeys(hotkeys.resetRubric, (e) => {
     if (currentRubric) {
       e.preventDefault();
       handleReset();
     }
-  }, [currentRubric]);
+  }, [currentRubric, hotkeys.resetRubric]);
 
   if (!currentRubric) {
     return null;
@@ -219,6 +247,18 @@ const FeedbackGenerator = () => {
               <RefreshIcon />
             </IconButton>
           </Stack>
+          {selectedSubmission && (
+            <Button
+              variant="contained"
+              onClick={handleSubmitToCanvas}
+              disabled={submittingToCanvas || (earned === 0 && possible === 0)}
+              color="success"
+              fullWidth
+              size="large"
+            >
+              {submittingToCanvas ? 'Staging...' : 'Stage Grade'}
+            </Button>
+          )}
         </Stack>
       </Paper>
 
@@ -334,16 +374,6 @@ const FeedbackGenerator = () => {
           >
             {copied ? 'Copied!' : 'Copy to Clipboard'}
           </Button>
-          {selectedSubmission && (
-            <Button
-              variant="contained"
-              onClick={handleSubmitToCanvas}
-              disabled={submittingToCanvas}
-              color="success"
-            >
-              {submittingToCanvas ? 'Submitting...' : 'Submit to Canvas'}
-            </Button>
-          )}
         </DialogActions>
       </Dialog>
       <Snackbar

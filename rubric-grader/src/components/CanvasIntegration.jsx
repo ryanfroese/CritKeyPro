@@ -318,7 +318,18 @@ const CanvasIntegration = () => {
               ) : (
                 assignments.map((assignment) => (
                   <MenuItem key={assignment.id} value={assignment.id}>
-                    {assignment.name}
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                      <Typography variant="body2" sx={{ flex: 1 }}>
+                        {assignment.name}
+                      </Typography>
+                      {assignment.points_possible !== null && assignment.points_possible !== undefined && (
+                        <Typography variant="caption" color="text.secondary" sx={{ ml: 2 }}>
+                          {Number.isInteger(assignment.points_possible) 
+                            ? `${assignment.points_possible} pts`
+                            : `${Number(assignment.points_possible).toFixed(1)} pts`}
+                        </Typography>
+                      )}
+                    </Box>
                   </MenuItem>
                 ))
               )}

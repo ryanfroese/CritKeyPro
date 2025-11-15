@@ -11,6 +11,8 @@ const STORAGE_KEYS = {
   PDF_INITIAL_ZOOM: 'hotrubric_pdf_initial_zoom',
   PDF_GRID_MODE: 'hotrubric_pdf_grid_mode',
   PDF_GRID_COLUMNS: 'hotrubric_pdf_grid_columns',
+  RUBRIC_SCORES: 'hotrubric_rubric_scores',
+  STAGED_GRADES: 'hotrubric_staged_grades',
 };
 
 /**
@@ -278,6 +280,149 @@ export const savePdfGridColumns = (columns) => {
     localStorage.setItem(STORAGE_KEYS.PDF_GRID_COLUMNS, columns.toString());
   } catch (error) {
     console.error('Error saving PDF grid columns to localStorage:', error);
+  }
+};
+
+/**
+ * Get rubric scores for an assignment
+ * @param {string} assignmentId
+ * @returns {Object} Map of submissionId/userId -> { score, feedback, timestamp }
+ */
+export const getRubricScores = (assignmentId) => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.RUBRIC_SCORES);
+    const allScores = data ? JSON.parse(data) : {};
+    return allScores[assignmentId] || {};
+  } catch (error) {
+    console.error('Error reading rubric scores from localStorage:', error);
+    return {};
+  }
+};
+
+/**
+ * Save rubric score for a submission
+ * @param {string} assignmentId
+ * @param {string} submissionId - user_id or submission id
+ * @param {Object} scoreData - { score, feedback, timestamp, rubricState? }
+ */
+export const saveRubricScore = (assignmentId, submissionId, scoreData) => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.RUBRIC_SCORES);
+    const allScores = data ? JSON.parse(data) : {};
+    if (!allScores[assignmentId]) {
+      allScores[assignmentId] = {};
+    }
+    allScores[assignmentId][submissionId] = {
+      ...scoreData,
+      timestamp: scoreData.timestamp || new Date().toISOString(),
+    };
+    localStorage.setItem(STORAGE_KEYS.RUBRIC_SCORES, JSON.stringify(allScores));
+  } catch (error) {
+    console.error('Error saving rubric score to localStorage:', error);
+  }
+};
+
+/**
+ * Save full rubric state for a submission (criteria selections, comments, etc.)
+ * @param {string} assignmentId
+ * @param {string} submissionId
+ * @param {Object} rubricState - { criteria: [...], feedbackLabel: string }
+ */
+export const saveRubricState = (assignmentId, submissionId, rubricState) => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.RUBRIC_SCORES);
+    const allScores = data ? JSON.parse(data) : {};
+    if (!allScores[assignmentId]) {
+      allScores[assignmentId] = {};
+    }
+    if (!allScores[assignmentId][submissionId]) {
+      allScores[assignmentId][submissionId] = {};
+    }
+    allScores[assignmentId][submissionId].rubricState = rubricState;
+    localStorage.setItem(STORAGE_KEYS.RUBRIC_SCORES, JSON.stringify(allScores));
+  } catch (error) {
+    console.error('Error saving rubric state to localStorage:', error);
+  }
+};
+
+/**
+ * Get rubric state for a submission
+ * @param {string} assignmentId
+ * @param {string} submissionId
+ * @returns {Object|null} Rubric state with criteria selections and comments
+ */
+export const getRubricState = (assignmentId, submissionId) => {
+  try {
+    const scores = getRubricScores(assignmentId);
+    return scores[submissionId]?.rubricState || null;
+  } catch (error) {
+    console.error('Error reading rubric state from localStorage:', error);
+    return null;
+  }
+};
+
+/**
+ * Get staged grades for an assignment
+ * @param {string} assignmentId
+ * @returns {Object} Map of submissionId -> { grade, feedback }
+ */
+export const getStagedGrades = (assignmentId) => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.STAGED_GRADES);
+    const allStaged = data ? JSON.parse(data) : {};
+    return allStaged[assignmentId] || {};
+  } catch (error) {
+    console.error('Error reading staged grades from localStorage:', error);
+    return {};
+  }
+};
+
+/**
+ * Stage a grade for a submission (not yet pushed to Canvas)
+ * @param {string} assignmentId
+ * @param {string} submissionId - user_id or submission id
+ * @param {Object} gradeData - { grade, feedback }
+ */
+export const stageGrade = (assignmentId, submissionId, gradeData) => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.STAGED_GRADES);
+    const allStaged = data ? JSON.parse(data) : {};
+    if (!allStaged[assignmentId]) {
+      allStaged[assignmentId] = {};
+    }
+    allStaged[assignmentId][submissionId] = gradeData;
+    localStorage.setItem(STORAGE_KEYS.STAGED_GRADES, JSON.stringify(allStaged));
+  } catch (error) {
+    console.error('Error staging grade to localStorage:', error);
+  }
+};
+
+/**
+ * Clear staged grades for an assignment (after pushing to Canvas)
+ * @param {string} assignmentId
+ */
+export const clearStagedGrades = (assignmentId) => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.STAGED_GRADES);
+    const allStaged = data ? JSON.parse(data) : {};
+    delete allStaged[assignmentId];
+    localStorage.setItem(STORAGE_KEYS.STAGED_GRADES, JSON.stringify(allStaged));
+  } catch (error) {
+    console.error('Error clearing staged grades from localStorage:', error);
+  }
+};
+
+/**
+ * Get all staged grades (across all assignments)
+ * @returns {Object} Map of assignmentId -> { submissionId -> { grade, feedback } }
+ */
+export const getAllStagedGrades = () => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.STAGED_GRADES);
+    return data ? JSON.parse(data) : {};
+  } catch (error) {
+    console.error('Error reading all staged grades from localStorage:', error);
+    return {};
   }
 };
 

@@ -249,9 +249,67 @@ app.put('/api/courses/:courseId/assignments/:assignmentId/submissions/:userId', 
       return res.status(400).json({ error: 'API token required' });
     }
 
+    // First, get the assignment to determine grading type
+    let assignment = null;
+    try {
+      const assignmentResponse = await canvasRequest(
+        `/courses/${courseId}/assignments/${assignmentId}`,
+        apiToken,
+        {},
+        canvasBase || CANVAS_API_BASE
+      );
+      assignment = assignmentResponse.data;
+    } catch (err) {
+      console.warn('Could not fetch assignment details:', err.message);
+    }
+
     const body = {};
-    if (posted_grade !== undefined) {
-      body.submission = { posted_grade };
+    if (posted_grade !== undefined && posted_grade !== null) {
+      // Convert grade format based on assignment grading type
+      let formattedGrade = posted_grade;
+      
+      // If grade is in "earned/possible" format (e.g., "85/100")
+      if (typeof posted_grade === 'string' && posted_grade.includes('/')) {
+        const [earnedStr, possibleStr] = posted_grade.split('/').map(s => s.trim());
+        const earned = parseFloat(earnedStr);
+        const possible = parseFloat(possibleStr);
+        
+        if (!isNaN(earned) && !isNaN(possible) && possible > 0) {
+          // Determine grading type from assignment
+          const gradingType = assignment?.grading_type || 'points';
+          
+          switch (gradingType) {
+            case 'points':
+              // For points-based: send just the earned points
+              formattedGrade = earned.toString();
+              break;
+            case 'percent':
+              // For percentage-based: send as percentage string
+              const percentage = (earned / possible) * 100;
+              formattedGrade = `${percentage.toFixed(2)}%`;
+              break;
+            case 'letter_grade':
+              // For letter grades: Canvas expects letter format, but we'll send points
+              // Canvas will convert based on the assignment's grading scheme
+              formattedGrade = earned.toString();
+              break;
+            case 'gpa_scale':
+              // For GPA scale: send points
+              formattedGrade = earned.toString();
+              break;
+            case 'pass_fail':
+              // For pass/fail: determine pass/fail based on percentage
+              const passPercentage = (earned / possible) * 100;
+              formattedGrade = passPercentage >= 60 ? 'pass' : 'fail';
+              break;
+            default:
+              // Default to points
+              formattedGrade = earned.toString();
+          }
+        }
+      }
+      
+      body.submission = { posted_grade: formattedGrade };
     }
     if (comment) {
       body.comment = { text_comment: comment };

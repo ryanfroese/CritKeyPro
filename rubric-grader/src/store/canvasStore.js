@@ -7,6 +7,13 @@ import {
   clearAllCache as clearAllCacheUtil, 
   getCacheSize 
 } from '../utils/pdfCache';
+import {
+  getRubricScores,
+  saveRubricScore,
+  getStagedGrades,
+  stageGrade,
+  clearStagedGrades,
+} from '../utils/localStorage';
 
 const API_BASE = 'http://localhost:3001';
 
@@ -54,7 +61,8 @@ const useCanvasStore = create((set, get) => ({
   assignments: [],
   allAssignments: [],
   assignmentGroups: [],
-  submissions: [],
+  submissions: [], // Filtered/sorted submissions for display
+  allSubmissions: [], // All submissions (unfiltered) for caching
   
   // Meta
   lastRequestUrls: {
@@ -70,10 +78,16 @@ const useCanvasStore = create((set, get) => ({
   cachedAssignments: [],
   parallelDownloadLimit: 3, // 0 = no limit
   
+  // Grading and sorting
+  sortBy: 'ungraded', // 'all' | 'graded' | 'ungraded'
+  rubricScores: {}, // Map of assignmentId -> { submissionId -> scoreData }
+  stagedGrades: {}, // Map of assignmentId -> { submissionId -> { grade, feedback } }
+  
   // Loading states
   loadingCourses: false,
   loadingAssignments: false,
   loadingSubmissions: false,
+  pushingGrades: false,
   
   // Error states
   error: null,
@@ -155,22 +169,56 @@ const useCanvasStore = create((set, get) => ({
 
   // Cache all PDFs for current assignment (parallel downloads, 3 at a time)
   cacheAllPdfs: async () => {
-    const { submissions, selectedAssignment, apiToken } = get();
-    if (!submissions.length || !selectedAssignment) {
+    const { allSubmissions, selectedAssignment, apiToken } = get();
+    if (!allSubmissions.length || !selectedAssignment) {
       return;
     }
 
-    set({ cachingProgress: { current: 0, total: submissions.length, isCaching: true } });
+    set({ cachingProgress: { current: 0, total: allSubmissions.length, isCaching: true } });
 
     try {
       // Filter submissions with PDFs and check which ones need caching
+      // Use allSubmissions (unfiltered) to cache all PDFs regardless of sort filter
       const pdfsToCache = [];
-      for (const sub of submissions) {
-        const pdfUrl = sub.attachments?.[0]?.url;
+      for (const sub of allSubmissions) {
+        // Use the same URL extraction logic as App.jsx
+        let pdfUrl = null;
+        
+        // Try attachments array first
+        if (sub.attachments && sub.attachments.length > 0) {
+          const pdfAttachment = sub.attachments.find(att => 
+            att.content_type?.includes('pdf') || 
+            att.filename?.toLowerCase().endsWith('.pdf') ||
+            att.url
+          ) || sub.attachments[0];
+          pdfUrl = pdfAttachment?.url || null;
+        }
+        
+        // Fall back to submission_history if attachments not in main object
+        if (!pdfUrl && sub.submission_history && sub.submission_history.length > 0) {
+          for (const historyItem of sub.submission_history) {
+            if (historyItem.attachments && historyItem.attachments.length > 0) {
+              const pdfAttachment = historyItem.attachments.find(att => 
+                att.content_type?.includes('pdf') || 
+                att.filename?.toLowerCase().endsWith('.pdf') ||
+                att.url
+              ) || historyItem.attachments[0];
+              if (pdfAttachment?.url) {
+                pdfUrl = pdfAttachment.url;
+                break;
+              }
+            }
+          }
+        }
+        
         if (!pdfUrl) continue;
 
-        // Check if already cached
-        const cached = await getCachedPdf(pdfUrl);
+        // Check if already cached by assignmentId + submissionId (more reliable than URL)
+        const submissionId = String(sub.id || sub.user_id);
+        const cached = await getCachedPdf(pdfUrl, {
+          assignmentId: selectedAssignment.id,
+          submissionId: submissionId,
+        });
         if (!cached) {
           pdfsToCache.push({ url: pdfUrl, submission: sub });
         }
@@ -178,8 +226,8 @@ const useCanvasStore = create((set, get) => ({
 
       // Update total to reflect actual PDFs that need caching
       const totalToCache = pdfsToCache.length;
-      const alreadyCached = submissions.length - totalToCache;
-      set({ cachingProgress: { current: alreadyCached, total: submissions.length, isCaching: true } });
+      const alreadyCached = allSubmissions.length - totalToCache;
+      set({ cachingProgress: { current: alreadyCached, total: allSubmissions.length, isCaching: true } });
 
       // Download in parallel batches
       const { parallelDownloadLimit } = get();
@@ -199,6 +247,7 @@ const useCanvasStore = create((set, get) => ({
 
               const blob = await response.blob();
               await cachePdf(url, blob, selectedAssignment.id, submission.id || submission.user_id, selectedAssignment.name);
+              
 
               // Update progress
               set((state) => ({
@@ -238,6 +287,7 @@ const useCanvasStore = create((set, get) => ({
 
                 const blob = await response.blob();
                 await cachePdf(url, blob, selectedAssignment.id, submission.id || submission.user_id, selectedAssignment.name);
+                
 
                 // Update progress
                 set((state) => ({
@@ -329,7 +379,6 @@ const useCanvasStore = create((set, get) => ({
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
-      console.log(`[Canvas] Fetching courses from API: ${API_BASE}/api/courses`);
       const response = await fetch(`${API_BASE}/api/courses?${params.toString()}`);
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
@@ -377,12 +426,6 @@ const useCanvasStore = create((set, get) => ({
         return true;
       });
       
-      console.log('[Client] Total courses received:', courses.length);
-      console.log('[Client] Active courses after filtering:', activeCourses.length);
-      console.log('[Client] Course workflow states:', [...new Set(courses.map(c => c.workflow_state))]);
-      if (activeCourses.length > 0) {
-        console.log('[Client] Active course names:', activeCourses.map(c => c.name).join(', '));
-      }
       
       const dedupedCourses = dedupeById(activeCourses);
       set((state) => ({
@@ -459,7 +502,6 @@ const useCanvasStore = create((set, get) => ({
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
-      console.log(`[Canvas] Fetching assignment groups for course ${courseId}: ${API_BASE}/api/courses/${courseId}/assignment-groups`);
       const response = await fetch(`${API_BASE}/api/courses/${courseId}/assignment-groups?${params.toString()}`);
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
@@ -545,7 +587,6 @@ const useCanvasStore = create((set, get) => ({
       if (groupId && groupId !== 'all') {
         params.append('assignment_group_id', groupId);
       }
-      console.log(`[Canvas] Fetching assignments for course ${courseId}: ${API_BASE}/api/courses/${courseId}/assignments${groupId && groupId !== 'all' ? `?assignment_group_id=${groupId}` : ''}`);
       const response = await fetch(`${API_BASE}/api/courses/${courseId}/assignments?${params.toString()}`);
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
@@ -595,7 +636,7 @@ const useCanvasStore = create((set, get) => ({
       return;
     }
 
-    set({ selectedAssignment: assignment, selectedSubmission: null, submissions: [], submissionIndex: 0 });
+    set({ selectedAssignment: assignment, selectedSubmission: null, submissions: [], allSubmissions: [], submissionIndex: 0 });
     await get().fetchSubmissions(selectedCourse.id, assignment.id);
   },
 
@@ -631,7 +672,6 @@ const useCanvasStore = create((set, get) => ({
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
-      console.log(`[Canvas] Fetching submissions for course ${courseId}, assignment ${assignmentId}: ${API_BASE}/api/courses/${courseId}/assignments/${assignmentId}/submissions`);
       const response = await fetch(`${API_BASE}/api/courses/${courseId}/assignments/${assignmentId}/submissions?${params.toString()}`);
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
@@ -661,8 +701,54 @@ const useCanvasStore = create((set, get) => ({
       const submissionsWithFiles = submissions.filter(sub => 
         sub.attachments && sub.attachments.length > 0
       );
+      
+      // Load rubric scores and staged grades from localStorage
+      const rubricScores = getRubricScores(assignmentId);
+      const stagedGrades = getStagedGrades(assignmentId);
+      
+      // Enrich submissions with graded status and rubric scores
+      const enrichedSubmissions = submissionsWithFiles.map(sub => {
+        const submissionId = String(sub.user_id || sub.id);
+        const canvasGrade = sub.grade;
+        const canvasScore = sub.score;
+        
+        // Check if submission is late
+        const isLate = sub.late === true || (sub.submitted_at && sub.cached_due_date && 
+                     new Date(sub.submitted_at) > new Date(sub.cached_due_date));
+        
+        // Check if graded in Canvas (but exclude auto-graded zeros)
+        // A grade of "0" or score of 0 on a late submission typically means auto-graded and still needs manual grading
+        const isAutoGradedZero = isLate && 
+                                  (canvasGrade === "0" || canvasGrade === 0 || canvasScore === 0) && 
+                                  !rubricScores[submissionId] && 
+                                  !stagedGrades[submissionId];
+        const isGradedInCanvas = (canvasGrade !== null && canvasGrade !== undefined) && !isAutoGradedZero;
+        const hasRubricScore = rubricScores[submissionId] !== undefined;
+        const hasStagedGrade = stagedGrades[submissionId] !== undefined;
+        
+        // Determine submission status
+        const status = isLate ? 'late' : (isAutoGradedZero ? 'auto-graded' : null);
+        
+        return {
+          ...sub,
+          isGraded: isGradedInCanvas || hasRubricScore,
+          canvasGrade: canvasGrade,
+          canvasScore: canvasScore,
+          rubricScore: rubricScores[submissionId] || null,
+          stagedGrade: stagedGrades[submissionId] || null,
+          isLate: isLate,
+          status: status,
+          isAutoGradedZero: isAutoGradedZero,
+        };
+      });
+      
+      const dedupedSubmissions = dedupeById(enrichedSubmissions);
+      
       set((state) => ({
-        submissions: dedupeById(submissionsWithFiles),
+        allSubmissions: dedupedSubmissions, // Store unfiltered list for caching
+        submissions: dedupedSubmissions, // Will be filtered by applySorting
+        rubricScores: { ...state.rubricScores, [assignmentId]: rubricScores },
+        stagedGrades: { ...state.stagedGrades, [assignmentId]: stagedGrades },
         loadingSubmissions: false,
         lastRequestUrls: {
           ...state.lastRequestUrls,
@@ -670,14 +756,33 @@ const useCanvasStore = create((set, get) => ({
         },
       }));
       
+      // Apply sorting (this will filter submissions for display)
+      get().applySorting();
+      
       // Auto-select first submission if available
-      if (submissionsWithFiles.length > 0) {
-        get().selectSubmissionByIndex(0);
+      const { submissions: sortedSubmissions, selectedSubmission } = get();
+      // Only auto-select if no submission is currently selected
+      // or if the current selection is not in the filtered list
+      if (sortedSubmissions.length > 0) {
+        if (!selectedSubmission) {
+          // No submission selected, select the first one
+          get().selectSubmissionByIndex(0);
+        } else {
+          // Check if current selection is still in the filtered list
+          const currentIndex = sortedSubmissions.findIndex(sub => 
+            String(sub.user_id || sub.id) === String(selectedSubmission.user_id || selectedSubmission.id)
+          );
+          if (currentIndex < 0) {
+            // Current selection was filtered out, select the first one
+            get().selectSubmissionByIndex(0);
+          }
+        }
       }
 
       // Cache all PDFs in background if offline mode is enabled
-      const { offlineMode } = get();
-      if (offlineMode && submissionsWithFiles.length > 0) {
+      // Use allSubmissions (unfiltered) for caching, not the filtered list
+      const { offlineMode, allSubmissions } = get();
+      if (offlineMode && allSubmissions.length > 0) {
         get().cacheAllPdfs();
       }
     } catch (error) {
@@ -709,7 +814,254 @@ const useCanvasStore = create((set, get) => ({
     }
   },
 
-  // Submit grade and feedback to Canvas
+  // Save rubric score for current submission
+  saveRubricScoreForSubmission: (score, feedback) => {
+    const { selectedAssignment, selectedSubmission } = get();
+    if (!selectedAssignment || !selectedSubmission) return;
+    
+    const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+    const scoreData = {
+      score,
+      feedback,
+      timestamp: new Date().toISOString(),
+    };
+    
+    // Save to localStorage
+    saveRubricScore(selectedAssignment.id, submissionId, scoreData);
+    
+    // Update in-memory state
+    set((state) => {
+      const assignmentId = selectedAssignment.id;
+      const newRubricScores = { ...state.rubricScores };
+      if (!newRubricScores[assignmentId]) {
+        newRubricScores[assignmentId] = {};
+      }
+      newRubricScores[assignmentId][submissionId] = scoreData;
+      
+      // Update submission in both filtered and unfiltered lists
+      const updateSubmission = (sub) => {
+        if (String(sub.user_id || sub.id) === submissionId) {
+          return {
+            ...sub,
+            isGraded: true,
+            rubricScore: scoreData,
+          };
+        }
+        return sub;
+      };
+      
+      const updatedSubmissions = state.submissions.map(updateSubmission);
+      const updatedAllSubmissions = state.allSubmissions.map(updateSubmission);
+      
+      return {
+        rubricScores: newRubricScores,
+        submissions: updatedSubmissions,
+        allSubmissions: updatedAllSubmissions,
+      };
+    });
+    
+    // Stage the grade (don't push to Canvas yet)
+    stageGrade(selectedAssignment.id, submissionId, {
+      grade: score.toString(),
+      feedback,
+    });
+    
+    // Update staged grades in state
+    set((state) => {
+      const assignmentId = selectedAssignment.id;
+      const newStagedGrades = { ...state.stagedGrades };
+      if (!newStagedGrades[assignmentId]) {
+        newStagedGrades[assignmentId] = {};
+      }
+      newStagedGrades[assignmentId][submissionId] = {
+        grade: score.toString(),
+        feedback,
+      };
+      
+      return { stagedGrades: newStagedGrades };
+    });
+    
+    // Re-apply sorting to update the list
+    get().applySorting();
+  },
+
+  // Set sort order
+  setSortBy: (sortBy) => {
+    set({ sortBy });
+    get().applySorting();
+  },
+
+  // Apply sorting to submissions (for display only, doesn't affect allSubmissions)
+  applySorting: () => {
+    const { allSubmissions, sortBy } = get();
+    if (!allSubmissions.length) return;
+    
+    // Start with all submissions, then filter/sort for display
+    let sorted = [...allSubmissions];
+    
+    if (sortBy === 'ungraded') {
+      // Show ungraded submissions (including auto-graded zeros)
+      sorted = sorted.filter(sub => !sub.isGraded || sub.isAutoGradedZero);
+    } else if (sortBy === 'graded') {
+      // Show only fully graded (exclude auto-graded zeros)
+      sorted = sorted.filter(sub => sub.isGraded && !sub.isAutoGradedZero);
+    }
+    // 'all' shows everything, no filter needed
+    
+    // Sort: ungraded first (including auto-graded zeros), then by student name
+    sorted.sort((a, b) => {
+      // First, prioritize ungraded (including auto-graded zeros)
+      const aNeedsGrading = !a.isGraded || a.isAutoGradedZero;
+      const bNeedsGrading = !b.isGraded || b.isAutoGradedZero;
+      if (aNeedsGrading !== bNeedsGrading) {
+        return aNeedsGrading ? -1 : 1;
+      }
+      // Then sort by student name
+      const nameA = a.user?.name || a.user?.sortable_name || '';
+      const nameB = b.user?.name || b.user?.sortable_name || '';
+      return nameA.localeCompare(nameB);
+    });
+    
+    set({ submissions: sorted });
+    
+    // Update selected submission index if needed
+    const { selectedSubmission, submissionIndex } = get();
+    if (selectedSubmission) {
+      const newIndex = sorted.findIndex(sub => 
+        String(sub.user_id || sub.id) === String(selectedSubmission.user_id || selectedSubmission.id)
+      );
+      if (newIndex >= 0 && newIndex !== submissionIndex) {
+        set({ submissionIndex: newIndex });
+      }
+    }
+  },
+
+  // Push all staged grades to Canvas
+  pushAllStagedGrades: async () => {
+    const { selectedCourse, selectedAssignment, apiToken, canvasApiBase, stagedGrades } = get();
+    if (!selectedCourse || !selectedAssignment || !apiToken) {
+      set({ error: 'Missing required data for pushing grades' });
+      return;
+    }
+
+    const assignmentId = selectedAssignment.id;
+    const gradesToPush = stagedGrades[assignmentId] || {};
+    
+    if (Object.keys(gradesToPush).length === 0) {
+      set({ error: 'No staged grades to push' });
+      return;
+    }
+
+    set({ pushingGrades: true, error: null });
+    
+    try {
+      const results = [];
+      const errors = [];
+      
+      // Push all grades in parallel
+      const pushPromises = Object.entries(gradesToPush).map(async ([submissionId, gradeData]) => {
+        try {
+          const response = await fetch(
+            `${API_BASE}/api/courses/${selectedCourse.id}/assignments/${assignmentId}/submissions/${submissionId}`,
+            {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                apiToken,
+                posted_grade: gradeData.grade,
+                comment: gradeData.feedback,
+                canvasBase: canvasApiBase,
+              }),
+            }
+          );
+
+          if (!response.ok) {
+            const errorText = await response.text().catch(() => null);
+            let message = `Failed to submit grade for submission ${submissionId}: ${response.status} ${response.statusText}`;
+            if (errorText) {
+              try {
+                const errorData = JSON.parse(errorText);
+                if (errorData?.error) {
+                  message = errorData.error;
+                }
+              } catch (parseError) {
+                message = `${message} - ${errorText.substring(0, 200)}`;
+              }
+            }
+            throw new Error(message);
+          }
+
+          const submissionText = await response.text();
+          let updatedSubmission;
+          try {
+            updatedSubmission = JSON.parse(submissionText);
+          } catch (parseError) {
+            throw new Error('Failed to parse submission update response from server.');
+          }
+          
+          results.push({ submissionId, submission: updatedSubmission });
+        } catch (error) {
+          errors.push({ submissionId, error: error.message });
+        }
+      });
+      
+      await Promise.all(pushPromises);
+      
+      // Clear staged grades for this assignment
+      clearStagedGrades(assignmentId);
+      
+      // Update submissions in both filtered and unfiltered lists
+      const { submissions, allSubmissions } = get();
+      const updateSubmission = (sub) => {
+        const submissionId = String(sub.user_id || sub.id);
+        const pushedResult = results.find(r => String(r.submissionId) === submissionId);
+        if (pushedResult) {
+          return {
+            ...sub,
+            isGraded: true,
+            canvasGrade: pushedResult.submission.grade,
+            canvasScore: pushedResult.submission.score,
+            stagedGrade: null,
+          };
+        }
+        return sub;
+      };
+      
+      const updatedSubmissions = submissions.map(updateSubmission);
+      const updatedAllSubmissions = allSubmissions.map(updateSubmission);
+      
+      set((state) => ({
+        submissions: updatedSubmissions,
+        allSubmissions: updatedAllSubmissions,
+        stagedGrades: {
+          ...state.stagedGrades,
+          [assignmentId]: {},
+        },
+        pushingGrades: false,
+      }));
+      
+      // Re-apply sorting after pushing grades
+      get().applySorting();
+      
+      if (errors.length > 0) {
+        set({ 
+          error: `Pushed ${results.length} grades successfully, but ${errors.length} failed. Check console for details.`,
+        });
+        console.error('Errors pushing grades:', errors);
+      } else {
+        set({ error: null });
+      }
+      
+      return { results, errors };
+    } catch (error) {
+      set({ error: error.message, pushingGrades: false });
+      throw error;
+    }
+  },
+
+  // Submit grade and feedback to Canvas (immediate, not staged)
   submitGrade: async (grade, feedback) => {
     const { selectedCourse, selectedAssignment, selectedSubmission, apiToken, canvasApiBase } = get();
     if (!selectedCourse || !selectedAssignment || !selectedSubmission || !apiToken) {
@@ -758,12 +1110,23 @@ const useCanvasStore = create((set, get) => ({
         console.error('Failed to parse submission update JSON:', submissionText);
         throw new Error('Failed to parse submission update response from server.');
       }
-      // Update the submission in the list
-      const { submissions } = get();
-      const updatedSubmissions = submissions.map(sub =>
-        sub.id === updatedSubmission.id ? updatedSubmission : sub
-      );
-      set({ submissions: updatedSubmissions });
+      // Update the submission in both filtered and unfiltered lists
+      const { submissions, allSubmissions } = get();
+      const updateSubmission = (sub) => {
+        if (String(sub.user_id || sub.id) === String(updatedSubmission.user_id || updatedSubmission.id)) {
+          return {
+            ...sub,
+            isGraded: true,
+            canvasGrade: updatedSubmission.grade,
+            canvasScore: updatedSubmission.score,
+          };
+        }
+        return sub;
+      };
+      
+      const updatedSubmissions = submissions.map(updateSubmission);
+      const updatedAllSubmissions = allSubmissions.map(updateSubmission);
+      set({ submissions: updatedSubmissions, allSubmissions: updatedAllSubmissions });
       return updatedSubmission;
     } catch (error) {
       set({ error: error.message });

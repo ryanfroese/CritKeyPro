@@ -17,20 +17,24 @@ import {
   Alert,
   Switch,
 } from '@mui/material';
-import { Settings as SettingsIcon, ExpandMore as ExpandMoreIcon } from '@mui/icons-material';
+import { Settings as SettingsIcon, ExpandMore as ExpandMoreIcon, Add as AddIcon } from '@mui/icons-material';
 import useRubricStore from '../store/rubricStore';
 import CourseSelector from './CourseSelector';
 import RubricSelector from './RubricSelector';
 import CSVImport from './CSVImport';
 import { generateCanvasCSV } from '../utils/csvParser';
 import JSZip from 'jszip';
+import TextField from '@mui/material/TextField';
 
 const SetupDrawer = () => {
   const [expanded, setExpanded] = useState(true);
   const [downloadOpen, setDownloadOpen] = useState(false);
   const [selectedRubricNames, setSelectedRubricNames] = useState([]);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [newRubricName, setNewRubricName] = useState('');
+  const [createError, setCreateError] = useState('');
 
-  const { availableRubrics, currentCourse, autoAdvance, setAutoAdvance, correctByDefault, setCorrectByDefault } = useRubricStore();
+  const { availableRubrics, currentCourse, autoAdvance, setAutoAdvance, correctByDefault, setCorrectByDefault, createRubric } = useRubricStore();
 
   const sortedRubrics = useMemo(() => {
     return [...availableRubrics].sort((a, b) => a.name.localeCompare(b.name));
@@ -105,6 +109,44 @@ const SetupDrawer = () => {
     setDownloadOpen(false);
   };
 
+  const handleOpenCreateDialog = () => {
+    setNewRubricName('');
+    setCreateError('');
+    setCreateDialogOpen(true);
+  };
+
+  const handleCloseCreateDialog = () => {
+    setCreateDialogOpen(false);
+    setNewRubricName('');
+    setCreateError('');
+  };
+
+  const handleCreateRubric = () => {
+    if (!newRubricName.trim()) {
+      setCreateError('Please enter a rubric name');
+      return;
+    }
+
+    // Check if name already exists
+    if (availableRubrics.some(r => r.name === newRubricName.trim())) {
+      setCreateError('A rubric with this name already exists');
+      return;
+    }
+
+    try {
+      createRubric(newRubricName.trim());
+      handleCloseCreateDialog();
+    } catch (error) {
+      setCreateError(error.message || 'Failed to create rubric');
+    }
+  };
+
+  const handleCreateKeyPress = (e) => {
+    if (e.key === 'Enter') {
+      handleCreateRubric();
+    }
+  };
+
   return (
     <Box sx={{ mb: 3 }}>
       <Accordion 
@@ -133,6 +175,16 @@ const SetupDrawer = () => {
           <Box sx={{ py: 1 }}>
             <CourseSelector />
             <RubricSelector />
+            <Button
+              fullWidth
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={handleOpenCreateDialog}
+              disabled={!currentCourse}
+              sx={{ mb: 2 }}
+            >
+              Create New Rubric
+            </Button>
             <FormGroup sx={{ my: 1 }}>
               <FormControlLabel
                 control={
@@ -210,6 +262,50 @@ const SetupDrawer = () => {
             disabled={selectedRubricNames.length === 0}
           >
             Download Selected
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Create Rubric Dialog */}
+      <Dialog
+        open={createDialogOpen}
+        onClose={handleCloseCreateDialog}
+        PaperProps={{
+          sx: { zIndex: 1400 }
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>Create New Rubric</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Rubric Name"
+            fullWidth
+            variant="outlined"
+            value={newRubricName}
+            onChange={(e) => {
+              setNewRubricName(e.target.value);
+              setCreateError('');
+            }}
+            onKeyPress={handleCreateKeyPress}
+            error={!!createError}
+            helperText={createError || 'Enter a name for your new rubric'}
+            sx={{ mt: 2 }}
+          />
+          <Alert severity="info" sx={{ mt: 2 }}>
+            A new rubric will be created with a single criterion and one level. You can edit it in the grading view.
+          </Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseCreateDialog}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleCreateRubric}
+            disabled={!newRubricName.trim()}
+          >
+            Create
           </Button>
         </DialogActions>
       </Dialog>

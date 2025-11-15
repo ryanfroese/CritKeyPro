@@ -14,6 +14,7 @@ import {
 import { Keyboard as KeyboardIcon } from '@mui/icons-material';
 import useRubricStore from './store/rubricStore';
 import useCanvasStore from './store/canvasStore';
+import { useHotkeyConfig } from './hooks/useHotkeyConfig';
 import SideDrawer from './components/SideDrawer';
 import RubricDisplay from './components/RubricDisplay';
 import FeedbackGenerator from './components/FeedbackGenerator';
@@ -93,28 +94,63 @@ function App() {
   }, [initialize, initializeCanvas]);
 
   // Get PDF URL from submission
-  const pdfUrl = selectedSubmission?.attachments?.[0]?.url || null;
+  // Check attachments array first, then fall back to submission_history if needed
+  const getPdfUrl = (submission) => {
+    if (!submission) return null;
+    
+    // Try attachments array first
+    if (submission.attachments && submission.attachments.length > 0) {
+      const pdfAttachment = submission.attachments.find(att => 
+        att.content_type?.includes('pdf') || 
+        att.filename?.toLowerCase().endsWith('.pdf') ||
+        att.url
+      ) || submission.attachments[0];
+      return pdfAttachment?.url || null;
+    }
+    
+    // Fall back to submission_history if attachments not in main object
+    if (submission.submission_history && submission.submission_history.length > 0) {
+      for (const historyItem of submission.submission_history) {
+        if (historyItem.attachments && historyItem.attachments.length > 0) {
+          const pdfAttachment = historyItem.attachments.find(att => 
+            att.content_type?.includes('pdf') || 
+            att.filename?.toLowerCase().endsWith('.pdf') ||
+            att.url
+          ) || historyItem.attachments[0];
+          if (pdfAttachment?.url) {
+            return pdfAttachment.url;
+          }
+        }
+      }
+    }
+    
+    return null;
+  };
+  
+  const pdfUrl = getPdfUrl(selectedSubmission);
+
+  const hotkeys = useHotkeyConfig();
 
   // Hotkeys for submission navigation
-  useHotkeys('ctrl+shift+right, meta+shift+right', (e) => {
+  useHotkeys(hotkeys.nextSubmission, (e) => {
     e.preventDefault();
     if (submissionIndex < submissions.length - 1) {
       nextSubmission();
     }
-  }, [submissionIndex, submissions.length, nextSubmission]);
+  }, [submissionIndex, submissions.length, nextSubmission, hotkeys.nextSubmission]);
 
-  useHotkeys('ctrl+shift+left, meta+shift+left', (e) => {
+  useHotkeys(hotkeys.previousSubmission, (e) => {
     e.preventDefault();
     if (submissionIndex > 0) {
       previousSubmission();
     }
-  }, [submissionIndex, previousSubmission]);
+  }, [submissionIndex, previousSubmission, hotkeys.previousSubmission]);
 
   // Shortcuts modal hotkey
-  useHotkeys('?', (e) => {
+  useHotkeys(hotkeys.showShortcuts, (e) => {
     e.preventDefault();
     setShortcutsOpen(true);
-  }, []);
+  }, [hotkeys.showShortcuts]);
 
   return (
     <ThemeProvider theme={theme}>
@@ -209,7 +245,8 @@ function App() {
               flexDirection: 'column',
             }}
           >
-            {pdfUrl ? (
+            {/* Show PDFViewer if we have pdfUrl OR if we have a selected submission and assignment (for cache-only loading) */}
+            {pdfUrl || (selectedSubmission && selectedAssignment) ? (
               <PDFViewer
                 fileUrl={pdfUrl}
                 apiToken={apiToken}

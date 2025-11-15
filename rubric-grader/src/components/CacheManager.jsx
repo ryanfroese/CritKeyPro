@@ -26,7 +26,7 @@ import {
   Storage as StorageIcon,
 } from '@mui/icons-material';
 import useCanvasStore from '../store/canvasStore';
-import { getCacheSize, rebuildMetadataFromPdfs, getPdfCountForAssignment } from '../utils/pdfCache';
+import { getCacheSize, getCachedAssignments, getPdfCountForAssignment } from '../utils/pdfCache';
 
 const CacheManager = ({ open, onClose }) => {
   const {
@@ -49,21 +49,15 @@ const CacheManager = ({ open, onClose }) => {
   const loadCacheInfo = useCallback(async () => {
     setLoading(true);
     try {
-      // Get cache size first to check if PDFs exist
+      // Get cache size first
       const size = await getCacheSize();
       setCacheSize(size);
       
-      // Refresh assignments (this will auto-rebuild if metadata is empty but PDFs exist)
+      // Refresh assignments (computed on-demand from PDFs)
       await refreshCachedAssignments();
       
-      // Double-check: if we have PDFs but no assignments, force rebuild
-      const { cachedAssignments: currentAssignments } = useCanvasStore.getState();
-      if (size.count > 0 && (!Array.isArray(currentAssignments) || currentAssignments.length === 0)) {
-        await rebuildMetadataFromPdfs();
-        await refreshCachedAssignments();
-      }
-      
       // Get actual PDF counts for each assignment
+      const { cachedAssignments: currentAssignments } = useCanvasStore.getState();
       if (Array.isArray(currentAssignments) && currentAssignments.length > 0) {
         const counts = new Map();
         await Promise.all(

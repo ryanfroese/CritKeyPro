@@ -26,12 +26,13 @@ import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import useCanvasStore from '../store/canvasStore';
 import { getCachedPdf } from '../utils/pdfCache';
 import { getPdfInitialZoom, savePdfInitialZoom, getPdfGridMode, savePdfGridMode, getPdfGridColumns, savePdfGridColumns } from '../utils/localStorage';
+import StudentSelector from './StudentSelector';
 
 // Configure PDF.js worker to use local bundled file
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious }) => {
-  const { offlineMode, cachingProgress } = useCanvasStore();
+  const { offlineMode, cachingProgress, selectedSubmission, selectedAssignment } = useCanvasStore();
   const [pdfDoc, setPdfDoc] = useState(null);
   const [numPages, setNumPages] = useState(0);
   const [scale, setScale] = useState(1.0);
@@ -58,7 +59,13 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
 
   // Load PDF document
   useEffect(() => {
-    if (!fileUrl) {
+    // Check if we have either a fileUrl OR assignmentId + submissionId
+    const submissionId = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
+    const assignmentId = selectedAssignment ? String(selectedAssignment.id) : null;
+    const hasIds = assignmentId && submissionId;
+    
+    if (!fileUrl && !hasIds) {
+      // No fileUrl and no IDs - can't load anything
       setPdfDoc(null);
       setNumPages(0);
       setLoading(false);
@@ -72,7 +79,7 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
       return;
     }
 
-    // Reset loaded state when fileUrl changes
+    // Reset loaded state when fileUrl or selection changes
     setPdfLoaded(false);
     setLoading(true);
     setError(null);
@@ -83,12 +90,19 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
     const loadPdf = async () => {
       // Store the current fileUrl to check if it changed during loading
       const currentFileUrl = fileUrl;
+      const currentSubmissionId = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
+      const currentAssignmentId = selectedAssignment ? String(selectedAssignment.id) : null;
       
       try {
         let pdfSource;
 
-        // Try to load from cache first
-        let cachedBlob = await getCachedPdf(currentFileUrl);
+        // Try to load from cache first (always check cache, regardless of offline mode)
+        // Primary lookup: by assignmentId + submissionId (most reliable)
+        // This works even if fileUrl is null
+        let cachedBlob = await getCachedPdf(currentFileUrl || '', {
+          assignmentId: currentAssignmentId,
+          submissionId: currentSubmissionId,
+        });
         
         // If not found and we're in offline mode, wait for caching to complete
         if (!cachedBlob && offlineMode) {
@@ -102,23 +116,34 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
             const pollInterval = 500;
             
             while (!cachedBlob && (Date.now() - startTime) < maxWaitTime) {
-              // Check if fileUrl changed (user switched to different PDF)
-              if (currentFileUrl !== currentFileUrlRef.current) {
+              // Check if fileUrl or selection changed (user switched to different PDF)
+              const currentSubmissionIdCheck = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
+              const currentAssignmentIdCheck = selectedAssignment ? String(selectedAssignment.id) : null;
+              if (currentFileUrl !== currentFileUrlRef.current ||
+                  currentSubmissionIdCheck !== currentSubmissionId ||
+                  currentAssignmentIdCheck !== currentAssignmentId) {
+                setWaitingForCache(false);
                 return; // Abort loading
               }
               
               await new Promise(resolve => setTimeout(resolve, pollInterval));
-              cachedBlob = await getCachedPdf(currentFileUrl);
+              
+              // Try to get cached PDF (primary lookup by assignmentId + submissionId)
+              cachedBlob = await getCachedPdf(currentFileUrl || '', {
+                assignmentId: currentAssignmentId,
+                submissionId: currentSubmissionId,
+              });
               
               // Check current caching progress from store
               const progress = useCanvasStore.getState().cachingProgress;
-              // If caching completed but PDF still not found, break
-              if (!progress.isCaching && !cachedBlob) {
-                break;
-              }
               
               // If we found the cached PDF, break immediately
               if (cachedBlob) {
+                break;
+              }
+              
+              // If caching completed but PDF still not found, break
+              if (!progress.isCaching && !cachedBlob) {
                 break;
               }
             }
@@ -128,16 +153,24 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           
           // If still not cached after waiting, show error
           if (!cachedBlob) {
-            // Check if fileUrl changed before throwing error
-            if (currentFileUrl !== currentFileUrlRef.current) {
+            // Check if fileUrl or selection changed before throwing error
+            const currentSubmissionIdCheck = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
+            const currentAssignmentIdCheck = selectedAssignment ? String(selectedAssignment.id) : null;
+            if (currentFileUrl !== currentFileUrlRef.current ||
+                currentSubmissionIdCheck !== currentSubmissionId ||
+                currentAssignmentIdCheck !== currentAssignmentId) {
               return; // Abort loading
             }
             throw new Error('PDF not cached. Please wait for caching to complete or enable online mode.');
           }
         }
         
-        // Check if fileUrl changed before proceeding
-        if (currentFileUrl !== currentFileUrlRef.current) {
+        // Check if fileUrl or selection changed before proceeding
+        const currentSubmissionIdCheck = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
+        const currentAssignmentIdCheck = selectedAssignment ? String(selectedAssignment.id) : null;
+        if (currentFileUrl !== currentFileUrlRef.current ||
+            currentSubmissionIdCheck !== currentSubmissionId ||
+            currentAssignmentIdCheck !== currentAssignmentId) {
           return; // Abort loading
         }
         
@@ -172,6 +205,11 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           renderTaskRefs.current = {};
           pageRefs.current = {};
           loadingTaskRef.current = null;
+          
+          // Reset scroll position to top when new PDF loads
+          if (containerRef.current) {
+            containerRef.current.scrollTop = 0;
+          }
         } else {
           // PDF loaded but we're no longer on this file, destroy it
           pdf.destroy();
@@ -214,7 +252,30 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
       // Reset PDF document to prevent stale renders
       setPdfDoc(null);
     };
-  }, [fileUrl, apiToken, offlineMode]); // Removed cachingProgress dependencies to prevent constant re-renders
+  }, [fileUrl, apiToken, offlineMode, selectedSubmission?.user_id, selectedSubmission?.id, selectedAssignment?.id]); // Include selection IDs so we reload when selection changes
+
+  // Reset scroll position when PDF document changes or when pages are rendered
+  useEffect(() => {
+    if (pdfDoc && containerRef.current) {
+      // Reset scroll to top when a new PDF is loaded
+      // Use a small delay to ensure layout is complete
+      const resetScroll = () => {
+        if (containerRef.current) {
+          containerRef.current.scrollTop = 0;
+          // Also ensure we can scroll to the very top by checking scrollTop again
+          requestAnimationFrame(() => {
+            if (containerRef.current && containerRef.current.scrollTop !== 0) {
+              containerRef.current.scrollTop = 0;
+            }
+          });
+        }
+      };
+      
+      // Reset immediately and after a short delay to catch any layout shifts
+      resetScroll();
+      setTimeout(resetScroll, 100);
+    }
+  }, [pdfDoc]);
 
   // Calculate initial scale to fit PDF in viewer and grid columns
   useEffect(() => {
@@ -265,7 +326,8 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           }
         } else {
           // Vertical mode - original behavior
-          const availableWidth = containerRect.width * zoomFactor;
+          // Account for padding (16px on each side = 32px total)
+          const availableWidth = (containerRect.width - 32) * zoomFactor;
           const fitScale = availableWidth / viewport.width;
           
           const isNewPdf = previousPdfDocRef.current !== pdfDoc;
@@ -489,7 +551,11 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
   };
 
 
-  if (!fileUrl) {
+  // Check if we have either fileUrl or assignmentId + submissionId
+  const hasFileUrl = !!fileUrl;
+  const hasIds = selectedAssignment?.id && selectedSubmission?.id;
+  
+  if (!hasFileUrl && !hasIds) {
     return (
       <Paper sx={{ p: 3, textAlign: 'center', minHeight: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Typography color="text.secondary">No PDF selected</Typography>
@@ -529,6 +595,11 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
 
   return (
     <Paper sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden', flex: 1, minHeight: 0 }}>
+      {/* Student Selector */}
+      <Box sx={{ p: 1, borderBottom: 1, borderColor: 'divider' }}>
+        <StudentSelector />
+      </Box>
+      
       {/* Controls */}
       <Box sx={{ p: 1, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
         {/* Navigation */}
@@ -697,11 +768,14 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           flexDirection: gridMode ? 'row' : 'column',
           flexWrap: gridMode ? 'wrap' : 'nowrap',
           alignItems: 'flex-start',
-          justifyContent: gridMode ? 'center' : 'center',
+          justifyContent: gridMode ? 'center' : 'flex-start',
           alignContent: gridMode ? 'flex-start' : 'stretch',
-          p: 2,
+          pt: 2,
+          px: 2,
+          pb: 2,
           backgroundColor: 'grey.200',
           gap: gridMode ? 2 : 0,
+          position: 'relative',
         }}
       >
         {Array.from({ length: numPages }, (_, i) => {
@@ -716,10 +790,9 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
                 mb: gridMode ? 0 : 2,
                 display: 'flex',
                 justifyContent: 'center',
-                ...(gridMode && {
-                  width: `calc((100% - ${(gridColumns - 1) * 16}px) / ${gridColumns})`,
-                  flexShrink: 0,
-                }),
+                alignItems: 'flex-start',
+                width: gridMode ? `calc((100% - ${(gridColumns - 1) * 16}px) / ${gridColumns})` : '100%',
+                flexShrink: 0,
                 '&:last-child': {
                   mb: 0,
                 },
@@ -732,8 +805,9 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
                 style={{
                   boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
                   display: 'block',
-                  maxWidth: gridMode ? '100%' : 'none',
-                  height: gridMode ? 'auto' : 'auto',
+                  maxWidth: gridMode ? '100%' : '100%',
+                  height: 'auto',
+                  margin: '0 auto',
                 }}
               />
             </Box>

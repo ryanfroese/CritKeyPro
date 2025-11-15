@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -9,9 +10,24 @@ import {
   Stack,
   Divider,
 } from '@mui/material';
-import { Keyboard as KeyboardIcon } from '@mui/icons-material';
+import { Keyboard as KeyboardIcon, Settings as SettingsIcon } from '@mui/icons-material';
+import { getHotkeys, formatHotkeyDisplay } from '../utils/hotkeys';
+import HotkeyCustomizer from './HotkeyCustomizer';
 
 const ShortcutsModal = ({ open, onClose }) => {
+  const [customizerOpen, setCustomizerOpen] = useState(false);
+  const [hotkeys, setHotkeys] = useState(() => getHotkeys());
+
+  // Listen for hotkey updates
+  useEffect(() => {
+    const handleUpdate = () => {
+      setHotkeys(getHotkeys());
+    };
+    window.addEventListener('hotkeysUpdated', handleUpdate);
+    return () => {
+      window.removeEventListener('hotkeysUpdated', handleUpdate);
+    };
+  }, []);
   return (
     <Dialog
       open={open}
@@ -30,6 +46,17 @@ const ShortcutsModal = ({ open, onClose }) => {
       </DialogTitle>
       <DialogContent dividers>
         <Stack spacing={3}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 1 }}>
+            <Button
+              variant="contained"
+              color="primary"
+              startIcon={<SettingsIcon />}
+              onClick={() => setCustomizerOpen(true)}
+              sx={{ mb: 2 }}
+            >
+              Customize Hotkeys
+            </Button>
+          </Box>
           {/* Rubric Grading */}
           <Box>
             <Typography variant="h6" gutterBottom fontWeight="bold">
@@ -38,7 +65,7 @@ const ShortcutsModal = ({ open, onClose }) => {
             <Stack spacing={1} sx={{ pl: 2 }}>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  1-9:
+                  {formatHotkeyDisplay(hotkeys.selectLevel1)}-{formatHotkeyDisplay(hotkeys.selectLevel9)}:
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Select rubric level (1 = highest points)
@@ -46,7 +73,7 @@ const ShortcutsModal = ({ open, onClose }) => {
               </Box>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  N or →
+                  {formatHotkeyDisplay(hotkeys.nextCriterion)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Next criterion
@@ -54,7 +81,7 @@ const ShortcutsModal = ({ open, onClose }) => {
               </Box>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  P or ←
+                  {formatHotkeyDisplay(hotkeys.previousCriterion)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Previous criterion
@@ -62,7 +89,7 @@ const ShortcutsModal = ({ open, onClose }) => {
               </Box>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  C
+                  {formatHotkeyDisplay(hotkeys.focusComment)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Focus comment field
@@ -70,7 +97,7 @@ const ShortcutsModal = ({ open, onClose }) => {
               </Box>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  Esc
+                  {formatHotkeyDisplay(hotkeys.unfocusComment)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Unfocus comment field
@@ -89,7 +116,7 @@ const ShortcutsModal = ({ open, onClose }) => {
             <Stack spacing={1} sx={{ pl: 2 }}>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  Ctrl+Shift+→ (Cmd+Shift+→)
+                  {formatHotkeyDisplay(hotkeys.nextSubmission)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Next submission
@@ -97,7 +124,7 @@ const ShortcutsModal = ({ open, onClose }) => {
               </Box>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  Ctrl+Shift+← (Cmd+Shift+←)
+                  {formatHotkeyDisplay(hotkeys.previousSubmission)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Previous submission
@@ -116,7 +143,7 @@ const ShortcutsModal = ({ open, onClose }) => {
             <Stack spacing={1} sx={{ pl: 2 }}>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  Ctrl+Enter (Cmd+Enter)
+                  {formatHotkeyDisplay(hotkeys.generateFeedback)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Generate feedback (copies to clipboard)
@@ -124,7 +151,7 @@ const ShortcutsModal = ({ open, onClose }) => {
               </Box>
               <Box>
                 <Typography variant="body2" component="span" fontWeight="medium">
-                  Ctrl+R (Cmd+R)
+                  {formatHotkeyDisplay(hotkeys.resetRubric)}
                 </Typography>
                 <Typography variant="body2" component="span" sx={{ ml: 1 }}>
                   Reset rubric
@@ -137,6 +164,18 @@ const ShortcutsModal = ({ open, onClose }) => {
       <DialogActions>
         <Button onClick={onClose}>Close</Button>
       </DialogActions>
+      
+      <HotkeyCustomizer
+        open={customizerOpen}
+        onClose={() => {
+          setCustomizerOpen(false);
+          // Refresh hotkeys when customizer closes
+          if (open) {
+            // Force re-render to show updated hotkeys
+            window.dispatchEvent(new Event('hotkeysUpdated'));
+          }
+        }}
+      />
     </Dialog>
   );
 };

@@ -6,7 +6,9 @@ import {
   getAllCourses,
   saveCurrentSession,
   getCurrentSession,
-  clearCurrentSession 
+  clearCurrentSession,
+  saveRubricState,
+  getRubricState,
 } from '../utils/localStorage';
 import { calculateTotalPoints } from '../utils/csvParser';
 
@@ -144,6 +146,137 @@ const useRubricStore = create((set, get) => ({
     
     // Auto-select the newly imported rubric
     set({ currentRubric: rubricWithLabel, currentCriterionIndex: 0 });
+    get().saveSession();
+  },
+
+  // Create a new rubric with a single criterion and one level
+  createRubric: (name) => {
+    const { currentCourse, correctByDefault } = get();
+    if (!currentCourse) {
+      throw new Error('Please select a course first');
+    }
+
+    const newRubric = {
+      name: name || 'New Rubric',
+      feedbackLabel: '',
+      criteria: [
+        {
+          name: 'Criterion 1',
+          description: '',
+          enableRange: '',
+          levels: [
+            {
+              name: 'Level 1',
+              description: '',
+              points: 0,
+            },
+          ],
+          selectedLevel: null,
+          comment: '',
+        },
+      ],
+      createdAt: new Date().toISOString(),
+    };
+
+    if (correctByDefault) {
+      const rubricWithDefaults = selectMaxLevels(newRubric);
+      saveRubricToStorage(currentCourse, rubricWithDefaults);
+      get().loadRubricsForCourse(currentCourse);
+      set({ currentRubric: rubricWithDefaults, currentCriterionIndex: 0 });
+    } else {
+      saveRubricToStorage(currentCourse, newRubric);
+      get().loadRubricsForCourse(currentCourse);
+      set({ currentRubric: newRubric, currentCriterionIndex: 0 });
+    }
+    get().saveSession();
+  },
+
+  // Rename a rubric
+  renameRubric: (oldName, newName) => {
+    const { currentCourse, availableRubrics } = get();
+    if (!currentCourse) {
+      throw new Error('Please select a course first');
+    }
+
+    if (!newName || newName.trim() === '') {
+      throw new Error('Rubric name cannot be empty');
+    }
+
+    const trimmedName = newName.trim();
+    const rubric = availableRubrics.find(r => r.name === oldName);
+    if (!rubric) {
+      throw new Error('Rubric not found');
+    }
+
+    // Check if new name already exists
+    if (availableRubrics.some(r => r.name === trimmedName && r.name !== oldName)) {
+      throw new Error('A rubric with this name already exists');
+    }
+
+    // Update rubric name
+    const updatedRubric = {
+      ...rubric,
+      name: trimmedName,
+    };
+
+    // Delete old rubric and save with new name
+    deleteRubricFromStorage(currentCourse, oldName);
+    saveRubricToStorage(currentCourse, updatedRubric);
+    get().loadRubricsForCourse(currentCourse);
+
+    // Update current rubric if it was the renamed one
+    const { currentRubric } = get();
+    if (currentRubric && currentRubric.name === oldName) {
+      set({ currentRubric: updatedRubric });
+      get().saveSession();
+    }
+  },
+
+  // Duplicate a rubric
+  duplicateRubric: (rubricName, newName) => {
+    const { currentCourse, correctByDefault } = get();
+    if (!currentCourse) {
+      throw new Error('Please select a course first');
+    }
+
+    const rubric = get().availableRubrics.find(r => r.name === rubricName);
+    if (!rubric) {
+      throw new Error('Rubric not found');
+    }
+
+    if (!newName || newName.trim() === '') {
+      throw new Error('Rubric name cannot be empty');
+    }
+
+    const trimmedName = newName.trim();
+    
+    // Check if name already exists
+    if (get().availableRubrics.some(r => r.name === trimmedName)) {
+      throw new Error('A rubric with this name already exists');
+    }
+
+    // Create a deep copy of the rubric
+    const duplicatedRubric = JSON.parse(JSON.stringify(rubric));
+    duplicatedRubric.name = trimmedName;
+    duplicatedRubric.createdAt = new Date().toISOString();
+    // Reset grading state
+    duplicatedRubric.criteria = duplicatedRubric.criteria.map(criterion => ({
+      ...criterion,
+      selectedLevel: null,
+      comment: '',
+    }));
+    duplicatedRubric.feedbackLabel = '';
+
+    if (correctByDefault) {
+      const rubricWithDefaults = selectMaxLevels(duplicatedRubric);
+      saveRubricToStorage(currentCourse, rubricWithDefaults);
+      get().loadRubricsForCourse(currentCourse);
+      set({ currentRubric: rubricWithDefaults, currentCriterionIndex: 0 });
+    } else {
+      saveRubricToStorage(currentCourse, duplicatedRubric);
+      get().loadRubricsForCourse(currentCourse);
+      set({ currentRubric: duplicatedRubric, currentCriterionIndex: 0 });
+    }
     get().saveSession();
   },
 
@@ -487,6 +620,74 @@ const useRubricStore = create((set, get) => ({
 
     set({ availableRubrics: updatedRubrics });
     loadRubricsForCourse(currentCourse);
+  },
+
+  // Load rubric state for a specific submission
+  loadRubricForSubmission: (assignmentId, submissionId, baseRubric) => {
+    if (!baseRubric) return;
+    
+    const savedState = getRubricState(assignmentId, submissionId);
+    
+    if (savedState && savedState.criteria) {
+      // Load saved rubric state (criteria selections, comments, feedbackLabel)
+      // Merge saved selections/comments with base rubric levels
+      const rubricCopy = JSON.parse(JSON.stringify(baseRubric));
+      rubricCopy.criteria = rubricCopy.criteria.map((baseCriterion, index) => {
+        const savedCriterion = savedState.criteria[index];
+        if (savedCriterion && savedCriterion.name === baseCriterion.name) {
+          // Use saved selections/comments but keep base levels
+          return {
+            ...baseCriterion,
+            selectedLevel: savedCriterion.selectedLevel,
+            comment: savedCriterion.comment || '',
+          };
+        }
+        return {
+          ...baseCriterion,
+          selectedLevel: null,
+          comment: '',
+        };
+      });
+      rubricCopy.feedbackLabel = savedState.feedbackLabel || '';
+      set({ currentRubric: rubricCopy, currentCriterionIndex: 0 });
+    } else {
+      // Reset rubric for ungraded submission
+      const rubricCopy = JSON.parse(JSON.stringify(baseRubric));
+      rubricCopy.criteria = rubricCopy.criteria.map(criterion => ({
+        ...criterion,
+        selectedLevel: null,
+        comment: '',
+      }));
+      rubricCopy.feedbackLabel = '';
+      const { correctByDefault } = get();
+      if (correctByDefault) {
+        const resetRubric = selectMaxLevels(rubricCopy);
+        set({ currentRubric: resetRubric, currentCriterionIndex: 0 });
+      } else {
+        set({ currentRubric: rubricCopy, currentCriterionIndex: 0 });
+      }
+    }
+    get().saveSession();
+  },
+
+  // Save rubric state for current submission
+  saveRubricForSubmission: (assignmentId, submissionId) => {
+    const { currentRubric } = get();
+    if (!currentRubric || !assignmentId || !submissionId) return;
+    
+    const rubricState = {
+      criteria: currentRubric.criteria.map(criterion => ({
+        name: criterion.name,
+        description: criterion.description,
+        enableRange: criterion.enableRange,
+        selectedLevel: criterion.selectedLevel,
+        comment: criterion.comment,
+        levels: criterion.levels, // Keep levels for reference
+      })),
+      feedbackLabel: currentRubric.feedbackLabel || '',
+    };
+    
+    saveRubricState(assignmentId, submissionId, rubricState);
   },
 }));
 

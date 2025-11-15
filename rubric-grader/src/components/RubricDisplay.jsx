@@ -30,7 +30,9 @@ import {
 } from '@mui/icons-material';
 import { useHotkeys } from 'react-hotkeys-hook';
 import useRubricStore from '../store/rubricStore';
+import useCanvasStore from '../store/canvasStore';
 import { renderTextWithLatex } from '../utils/latex.jsx';
+import { useHotkeyConfig } from '../hooks/useHotkeyConfig';
 
 const calculatePossiblePoints = (criteria = []) =>
   criteria.reduce((sum, criterion) => {
@@ -74,7 +76,15 @@ const RubricDisplay = () => {
     replaceCriteria,
     updateFeedbackLabel,
     autoAdvance,
+    loadRubricForSubmission,
+    saveRubricForSubmission,
+    availableRubrics,
   } = useRubricStore();
+  
+  const {
+    selectedSubmission,
+    selectedAssignment,
+  } = useCanvasStore();
 
   const [commentFocused, setCommentFocused] = useState(false);
   const commentRef = useRef(null);
@@ -92,10 +102,44 @@ const RubricDisplay = () => {
   const [draggedCriterionIndex, setDraggedCriterionIndex] = useState(null);
   const [expandedDescriptions, setExpandedDescriptions] = useState({});
   const [editingLevels, setEditingLevels] = useState({});
+  const previousSubmissionRef = useRef(null);
 
   // Get criterion safely - will be null if no rubric
   const criterion = currentRubric?.criteria?.[currentCriterionIndex] || null;
   const totalCriteria = currentRubric?.criteria?.length || 0;
+
+  // Sync rubric with selected submission
+  useEffect(() => {
+    if (!selectedSubmission || !selectedAssignment || availableRubrics.length === 0) {
+      return;
+    }
+
+    const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+    const previousSubmissionId = previousSubmissionRef.current 
+      ? String(previousSubmissionRef.current.user_id || previousSubmissionRef.current.id)
+      : null;
+
+    // Only reload if submission changed
+    if (submissionId === previousSubmissionId) {
+      return;
+    }
+
+    previousSubmissionRef.current = selectedSubmission;
+
+    // Use the first available rubric (or current rubric if it exists)
+    const baseRubric = currentRubric || availableRubrics[0];
+    if (baseRubric) {
+      loadRubricForSubmission(selectedAssignment.id, submissionId, baseRubric);
+    }
+  }, [selectedSubmission?.user_id, selectedSubmission?.id, selectedAssignment?.id, availableRubrics.length]);
+
+  // Save rubric state when it changes
+  useEffect(() => {
+    if (!currentRubric || !selectedSubmission || !selectedAssignment) return;
+    
+    const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+    saveRubricForSubmission(selectedAssignment.id, submissionId);
+  }, [currentRubric?.criteria, currentRubric?.feedbackLabel, selectedSubmission?.user_id, selectedAssignment?.id]);
 
   const currentTotalPossible = useMemo(
     () => calculatePossiblePoints(currentRubric?.criteria || []),
@@ -105,6 +149,11 @@ const RubricDisplay = () => {
   const handleLevelSelect = (levelIndex) => {
     if (!currentRubric) return;
     selectLevel(currentCriterionIndex, levelIndex);
+    // Save rubric state after selection
+    if (selectedSubmission && selectedAssignment) {
+      const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+      saveRubricForSubmission(selectedAssignment.id, submissionId);
+    }
     // Auto-advance to next criterion after selection
     if (autoAdvance) {
       setTimeout(() => {
@@ -118,6 +167,11 @@ const RubricDisplay = () => {
   const handleCommentChange = (e) => {
     if (!currentRubric) return;
     updateComment(currentCriterionIndex, e.target.value);
+    // Save rubric state after comment change
+    if (selectedSubmission && selectedAssignment) {
+      const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+      saveRubricForSubmission(selectedAssignment.id, submissionId);
+    }
   };
 
   const handleOpenAddLevelDialog = () => {
@@ -432,25 +486,103 @@ const RubricDisplay = () => {
   // All hooks must be called unconditionally - disable when no rubric
   const hasRubric = !!currentRubric;
   const canUseHotkeys = hasRubric && !commentFocused && !levelDialogOpen;
+  const hotkeys = useHotkeyConfig();
 
-  // Keyboard shortcuts (1-9 for levels) - combined into single hook
+  // Keyboard shortcuts (1-9 for levels) - individual hooks for each level
   useHotkeys(
-    '1,2,3,4,5,6,7,8,9',
-    (keyboardEvent, hotkeysEvent) => {
-      if (canUseHotkeys && criterion) {
-        const levelIndex = parseInt(hotkeysEvent.keys[0]) - 1;
-        if (criterion.levels?.[levelIndex]) {
-          handleLevelSelect(levelIndex);
-        }
+    hotkeys.selectLevel1,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[0]) {
+        handleLevelSelect(0);
       }
     },
     { enabled: canUseHotkeys },
-    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys]
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel1]
+  );
+  useHotkeys(
+    hotkeys.selectLevel2,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[1]) {
+        handleLevelSelect(1);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel2]
+  );
+  useHotkeys(
+    hotkeys.selectLevel3,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[2]) {
+        handleLevelSelect(2);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel3]
+  );
+  useHotkeys(
+    hotkeys.selectLevel4,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[3]) {
+        handleLevelSelect(3);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel4]
+  );
+  useHotkeys(
+    hotkeys.selectLevel5,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[4]) {
+        handleLevelSelect(4);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel5]
+  );
+  useHotkeys(
+    hotkeys.selectLevel6,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[5]) {
+        handleLevelSelect(5);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel6]
+  );
+  useHotkeys(
+    hotkeys.selectLevel7,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[6]) {
+        handleLevelSelect(6);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel7]
+  );
+  useHotkeys(
+    hotkeys.selectLevel8,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[7]) {
+        handleLevelSelect(7);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel8]
+  );
+  useHotkeys(
+    hotkeys.selectLevel9,
+    () => {
+      if (canUseHotkeys && criterion && criterion.levels?.[8]) {
+        handleLevelSelect(8);
+      }
+    },
+    { enabled: canUseHotkeys },
+    [currentCriterionIndex, commentFocused, criterion, canUseHotkeys, hotkeys.selectLevel9]
   );
 
   // Navigation hotkeys
   useHotkeys(
-    'n, right',
+    hotkeys.nextCriterion,
     (event) => {
       if (event?.key === 'ArrowRight') {
         event.preventDefault();
@@ -458,11 +590,11 @@ const RubricDisplay = () => {
       if (canUseHotkeys) goToNextCriterion();
     },
     { enabled: canUseHotkeys },
-    [commentFocused, canUseHotkeys]
+    [commentFocused, canUseHotkeys, hotkeys.nextCriterion]
   );
 
   useHotkeys(
-    'p, left',
+    hotkeys.previousCriterion,
     (event) => {
       if (event?.key === 'ArrowLeft') {
         event.preventDefault();
@@ -470,11 +602,11 @@ const RubricDisplay = () => {
       if (canUseHotkeys) goToPreviousCriterion();
     },
     { enabled: canUseHotkeys },
-    [commentFocused, canUseHotkeys]
+    [commentFocused, canUseHotkeys, hotkeys.previousCriterion]
   );
 
   useHotkeys(
-    'space',
+    hotkeys.nextCriterionSpace,
     (event) => {
       event.preventDefault();
       if (!autoAdvance && canUseHotkeys) {
@@ -482,12 +614,12 @@ const RubricDisplay = () => {
       }
     },
     { enabled: !autoAdvance && canUseHotkeys },
-    [autoAdvance, canUseHotkeys]
+    [autoAdvance, canUseHotkeys, hotkeys.nextCriterionSpace]
   );
 
   // Focus comment hotkey
   useHotkeys(
-    'c',
+    hotkeys.focusComment,
     (keyboardEvent) => {
       if (hasRubric && !commentFocused && !levelDialogOpen) {
         keyboardEvent.preventDefault();
@@ -495,12 +627,12 @@ const RubricDisplay = () => {
       }
     },
     { enabled: hasRubric && !commentFocused && !levelDialogOpen, preventDefault: true },
-    [commentFocused, hasRubric, levelDialogOpen]
+    [commentFocused, hasRubric, levelDialogOpen, hotkeys.focusComment]
   );
 
   // Escape to unfocus inputs
   useHotkeys(
-    'escape',
+    hotkeys.unfocusComment,
     (event) => {
       event.preventDefault();
       const activeEl = document.activeElement;
@@ -512,7 +644,7 @@ const RubricDisplay = () => {
       }
     },
     { enableOnFormTags: true },
-    [commentFocused]
+    [commentFocused, hotkeys.unfocusComment]
   );
 
   // Early return AFTER all hooks

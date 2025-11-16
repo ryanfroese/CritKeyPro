@@ -140,12 +140,93 @@ PORT=3001
 
 For custom Canvas instances, change `CANVAS_API_BASE` to your school's Canvas URL.
 
-## Security Notes
+## Security Features
 
-- API tokens are stored in browser localStorage (not encrypted)
-- The backend server should only be accessible from localhost in development
-- Never commit API tokens or `.env` files to version control
-- In production, consider implementing proper authentication and token encryption
+CritKey Pro implements multiple layers of security to protect your Canvas API token:
+
+### Token Protection
+
+**AES-256 Encryption**
+- All Canvas API tokens are encrypted using military-grade AES-256 encryption before storage
+- Encryption key is generated per browser session and stored separately
+- Prevents trivial token theft via browser extensions or direct storage access
+
+**Session Storage**
+- Tokens are stored in `sessionStorage` instead of persistent `localStorage`
+- Data is automatically cleared when you close your browser
+- Reduces the window of exposure compared to persistent storage
+
+**Authorization Headers**
+- API tokens are sent via HTTP Authorization headers (RFC 6750 Bearer token format)
+- Never included in URLs or query parameters
+- Prevents token leakage through browser history, server logs, or referrer headers
+
+### Server Security
+
+**Input Validation**
+- All API endpoints validate input parameters using express-validator
+- Prevents injection attacks and malformed requests
+- Rejects invalid course IDs, assignment IDs, and user IDs
+
+**Rate Limiting**
+- 100 requests per 15 minutes per IP address
+- Prevents brute force attacks and API abuse
+- Returns clear rate limit headers for monitoring
+
+**Error Sanitization**
+- Detailed error messages logged server-side only
+- Generic error messages returned to clients
+- Prevents information leakage about server internals
+
+**Security Headers (Helmet)**
+- X-Content-Type-Options: nosniff
+- X-Frame-Options: DENY
+- Hides X-Powered-By header
+- Prevents common web vulnerabilities
+
+**CORS Configuration**
+- Restricted to `http://localhost:5173` (Vite dev server)
+- Blocks unauthorized cross-origin requests
+- Can be configured via `FRONTEND_URL` environment variable
+
+### User Controls
+
+**Privacy Notice**
+- Access via "Privacy & Security" button in Setup
+- Explains what data is collected and how it's protected
+- Details encryption, storage, and data usage policies
+
+**Clear All Data**
+- Accessible via Setup drawer
+- Immediately deletes all encrypted session data
+- Use if you suspect token compromise or before sharing your device
+
+### Best Practices
+
+✅ **DO:**
+- Generate a dedicated Canvas API token for CritKey Pro
+- Regenerate your token if you suspect it's been compromised
+- Close your browser when done grading to clear session data
+- Use the "Clear All Data" feature before sharing your device
+
+❌ **DON'T:**
+- Share your Canvas API token with anyone
+- Commit your token or `.env` files to version control
+- Use the same token across multiple applications
+- Leave your browser open unattended with CritKey Pro running
+
+### Localhost Security Note
+
+This application is designed for **localhost-only** use. Since all traffic stays on your machine:
+- HTTP is used instead of HTTPS (no network to intercept)
+- The backend server should never be exposed to the network
+- All security measures focus on preventing token theft from storage/logs rather than network attacks
+
+For production deployment, you would need to add:
+- HTTPS with valid SSL certificates
+- Proper authentication (OAuth 2.0)
+- Database-backed session management
+- Additional network security measures
 
 ## Troubleshooting
 

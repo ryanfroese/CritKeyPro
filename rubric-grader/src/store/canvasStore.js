@@ -1,11 +1,11 @@
 import { create } from 'zustand';
-import { 
-  cachePdf, 
-  getCachedPdf, 
-  getCachedAssignments, 
-  deleteAssignmentCache as deleteAssignmentCacheUtil, 
-  clearAllCache as clearAllCacheUtil, 
-  getCacheSize 
+import {
+  cachePdf,
+  getCachedPdf,
+  getCachedAssignments,
+  deleteAssignmentCache as deleteAssignmentCacheUtil,
+  clearAllCache as clearAllCacheUtil,
+  getCacheSize
 } from '../utils/pdfCache';
 import {
   getRubricScores,
@@ -14,8 +14,22 @@ import {
   stageGrade,
   clearStagedGrades,
 } from '../utils/localStorage';
+import {
+  setSecureItem,
+  getSecureItem,
+  removeSecureItem
+} from '../utils/secureStorage';
 
 const API_BASE = 'http://localhost:3001';
+
+// Helper function to provide user-friendly error messages
+const getErrorMessage = (error) => {
+  // Detect connection errors (server not running)
+  if (error.message.includes('Failed to fetch') || error.name === 'TypeError') {
+    return 'Backend server not running. Please start the server with: cd server && npm run dev';
+  }
+  return error.message;
+};
 
 const dedupeById = (items = []) => {
   const seen = new Set();
@@ -95,11 +109,11 @@ const useCanvasStore = create((set, get) => ({
   // Set API token
   setApiToken: (token) => {
     set({ apiToken: token });
-    // Store in localStorage
+    // Store in encrypted sessionStorage (cleared on browser close)
     if (token) {
-      localStorage.setItem('canvas_api_token', token);
+      setSecureItem('canvas_api_token', token);
     } else {
-      localStorage.removeItem('canvas_api_token');
+      removeSecureItem('canvas_api_token');
     }
   },
 
@@ -113,9 +127,9 @@ const useCanvasStore = create((set, get) => ({
     }
   },
 
-  // Initialize from localStorage
+  // Initialize from sessionStorage (encrypted)
   initialize: async () => {
-    const token = localStorage.getItem('canvas_api_token');
+    const token = getSecureItem('canvas_api_token');
     const baseUrl = localStorage.getItem('canvas_api_base');
     const offlineMode = localStorage.getItem('canvas_offline_mode') === 'true';
     const savedCourseId = localStorage.getItem('canvas_selected_course_id');
@@ -238,8 +252,13 @@ const useCanvasStore = create((set, get) => ({
         await Promise.all(
           pdfsToCache.map(async ({ url, submission }) => {
             try {
-              const proxyUrl = `http://localhost:3001/api/proxy-file?url=${encodeURIComponent(url)}&apiToken=${encodeURIComponent(apiToken)}`;
-              const response = await fetch(proxyUrl);
+              const proxyUrl = `${API_BASE}/api/proxy-file?url=${encodeURIComponent(url)}`;
+              const response = await fetch(proxyUrl, {
+                headers: {
+                  'Authorization': `Bearer ${apiToken}`,
+                  'Content-Type': 'application/json'
+                }
+              });
               if (!response.ok) {
                 console.warn(`Failed to fetch PDF: ${response.status}`);
                 return;
@@ -278,8 +297,13 @@ const useCanvasStore = create((set, get) => ({
           await Promise.all(
             batch.map(async ({ url, submission }) => {
               try {
-                const proxyUrl = `http://localhost:3001/api/proxy-file?url=${encodeURIComponent(url)}&apiToken=${encodeURIComponent(apiToken)}`;
-                const response = await fetch(proxyUrl);
+                const proxyUrl = `${API_BASE}/api/proxy-file?url=${encodeURIComponent(url)}`;
+                const response = await fetch(proxyUrl, {
+                  headers: {
+                    'Authorization': `Bearer ${apiToken}`,
+                    'Content-Type': 'application/json'
+                  }
+                });
                 if (!response.ok) {
                   console.warn(`Failed to fetch PDF: ${response.status}`);
                   return;
@@ -375,11 +399,17 @@ const useCanvasStore = create((set, get) => ({
 
     set({ loadingCourses: true, error: null });
     try {
-      const params = new URLSearchParams({ apiToken });
+      const params = new URLSearchParams();
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
-      const response = await fetch(`${API_BASE}/api/courses?${params.toString()}`);
+      const url = params.toString() ? `${API_BASE}/api/courses?${params.toString()}` : `${API_BASE}/api/courses`;
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
         let message = `Failed to fetch courses: ${response.status} ${response.statusText}`;
@@ -450,7 +480,7 @@ const useCanvasStore = create((set, get) => ({
         }
       }
     } catch (error) {
-      set({ error: error.message, loadingCourses: false });
+      set({ error: getErrorMessage(error), loadingCourses: false });
     }
   },
 
@@ -498,11 +528,19 @@ const useCanvasStore = create((set, get) => ({
     }
 
     try {
-      const params = new URLSearchParams({ apiToken });
+      const params = new URLSearchParams();
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
-      const response = await fetch(`${API_BASE}/api/courses/${courseId}/assignment-groups?${params.toString()}`);
+      const url = params.toString()
+        ? `${API_BASE}/api/courses/${courseId}/assignment-groups?${params.toString()}`
+        : `${API_BASE}/api/courses/${courseId}/assignment-groups`;
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
         let message = `Failed to fetch assignment groups: ${response.status} ${response.statusText}`;
@@ -564,7 +602,7 @@ const useCanvasStore = create((set, get) => ({
         }
       }
     } catch (error) {
-      set({ error: error.message });
+      set({ error: getErrorMessage(error) });
     }
   },
 
@@ -580,14 +618,22 @@ const useCanvasStore = create((set, get) => ({
 
     set({ loadingAssignments: true, error: null });
     try {
-      const params = new URLSearchParams({ apiToken });
+      const params = new URLSearchParams();
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
       if (groupId && groupId !== 'all') {
         params.append('assignment_group_id', groupId);
       }
-      const response = await fetch(`${API_BASE}/api/courses/${courseId}/assignments?${params.toString()}`);
+      const url = params.toString()
+        ? `${API_BASE}/api/courses/${courseId}/assignments?${params.toString()}`
+        : `${API_BASE}/api/courses/${courseId}/assignments`;
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
         let message = `Failed to fetch assignments: ${response.status} ${response.statusText}`;
@@ -624,7 +670,7 @@ const useCanvasStore = create((set, get) => ({
         },
       }));
     } catch (error) {
-      set({ error: error.message, loadingAssignments: false });
+      set({ error: getErrorMessage(error), loadingAssignments: false });
     }
   },
 
@@ -668,11 +714,19 @@ const useCanvasStore = create((set, get) => ({
 
     set({ loadingSubmissions: true, error: null });
     try {
-      const params = new URLSearchParams({ apiToken });
+      const params = new URLSearchParams();
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
-      const response = await fetch(`${API_BASE}/api/courses/${courseId}/assignments/${assignmentId}/submissions?${params.toString()}`);
+      const url = params.toString()
+        ? `${API_BASE}/api/courses/${courseId}/assignments/${assignmentId}/submissions?${params.toString()}`
+        : `${API_BASE}/api/courses/${courseId}/assignments/${assignmentId}/submissions`;
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
         let message = `Failed to fetch submissions: ${response.status} ${response.statusText}`;
@@ -786,7 +840,7 @@ const useCanvasStore = create((set, get) => ({
         get().cacheAllPdfs();
       }
     } catch (error) {
-      set({ error: error.message, loadingSubmissions: false });
+      set({ error: getErrorMessage(error), loadingSubmissions: false });
     }
   },
 
@@ -966,10 +1020,10 @@ const useCanvasStore = create((set, get) => ({
             {
               method: 'PUT',
               headers: {
+                'Authorization': `Bearer ${apiToken}`,
                 'Content-Type': 'application/json',
               },
               body: JSON.stringify({
-                apiToken,
                 posted_grade: gradeData.grade,
                 comment: gradeData.feedback,
                 canvasBase: canvasApiBase,
@@ -1053,10 +1107,10 @@ const useCanvasStore = create((set, get) => ({
       } else {
         set({ error: null });
       }
-      
+
       return { results, errors };
     } catch (error) {
-      set({ error: error.message, pushingGrades: false });
+      set({ error: getErrorMessage(error), pushingGrades: false });
       throw error;
     }
   },
@@ -1075,10 +1129,10 @@ const useCanvasStore = create((set, get) => ({
         {
           method: 'PUT',
           headers: {
+            'Authorization': `Bearer ${apiToken}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            apiToken,
             posted_grade: grade,
             comment: feedback,
             canvasBase: canvasApiBase,
@@ -1129,7 +1183,7 @@ const useCanvasStore = create((set, get) => ({
       set({ submissions: updatedSubmissions, allSubmissions: updatedAllSubmissions });
       return updatedSubmission;
     } catch (error) {
-      set({ error: error.message });
+      set({ error: getErrorMessage(error) });
       throw error;
     }
   },

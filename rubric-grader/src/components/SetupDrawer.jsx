@@ -17,12 +17,15 @@ import {
   Alert,
   Switch,
 } from '@mui/material';
-import { Settings as SettingsIcon, ExpandMore as ExpandMoreIcon, Add as AddIcon } from '@mui/icons-material';
+import { Settings as SettingsIcon, ExpandMore as ExpandMoreIcon, Add as AddIcon, Security as SecurityIcon, DeleteForever as DeleteForeverIcon } from '@mui/icons-material';
 import useRubricStore from '../store/rubricStore';
+import useCanvasStore from '../store/canvasStore';
 import CourseSelector from './CourseSelector';
 import RubricSelector from './RubricSelector';
 import CSVImport from './CSVImport';
+import PrivacyNotice from './PrivacyNotice';
 import { generateCanvasCSV } from '../utils/csvParser';
+import { clearSecureStorage } from '../utils/secureStorage';
 import JSZip from 'jszip';
 import TextField from '@mui/material/TextField';
 
@@ -33,8 +36,11 @@ const SetupDrawer = () => {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const [newRubricName, setNewRubricName] = useState('');
   const [createError, setCreateError] = useState('');
+  const [privacyNoticeOpen, setPrivacyNoticeOpen] = useState(false);
+  const [clearDataDialogOpen, setClearDataDialogOpen] = useState(false);
 
   const { availableRubrics, currentCourse, autoAdvance, setAutoAdvance, correctByDefault, setCorrectByDefault, createRubric } = useRubricStore();
+  const { setApiToken, setCanvasApiBase } = useCanvasStore();
 
   const sortedRubrics = useMemo(() => {
     return [...availableRubrics].sort((a, b) => a.name.localeCompare(b.name));
@@ -147,6 +153,32 @@ const SetupDrawer = () => {
     }
   };
 
+  const handleOpenPrivacyNotice = () => {
+    setPrivacyNoticeOpen(true);
+  };
+
+  const handleClosePrivacyNotice = () => {
+    setPrivacyNoticeOpen(false);
+  };
+
+  const handleOpenClearDataDialog = () => {
+    setClearDataDialogOpen(true);
+  };
+
+  const handleCloseClearDataDialog = () => {
+    setClearDataDialogOpen(false);
+  };
+
+  const handleClearAllData = () => {
+    // Clear encrypted sessionStorage
+    clearSecureStorage();
+    // Clear Canvas store state
+    setApiToken(null);
+    setCanvasApiBase(null);
+    // Close dialog
+    setClearDataDialogOpen(false);
+  };
+
   return (
     <Box sx={{ mb: 3 }}>
       <Accordion 
@@ -217,6 +249,27 @@ const SetupDrawer = () => {
               Download Rubrics
             </Button>
             <Divider sx={{ my: 2 }} />
+            <Box sx={{ display: 'flex', gap: 1, mb: 2 }}>
+              <Button
+                fullWidth
+                variant="outlined"
+                startIcon={<SecurityIcon />}
+                onClick={handleOpenPrivacyNotice}
+                size="small"
+              >
+                Privacy & Security
+              </Button>
+              <Button
+                fullWidth
+                variant="outlined"
+                color="error"
+                startIcon={<DeleteForeverIcon />}
+                onClick={handleOpenClearDataDialog}
+                size="small"
+              >
+                Clear All Data
+              </Button>
+            </Box>
             <CSVImport />
           </Box>
         </AccordionDetails>
@@ -306,6 +359,63 @@ const SetupDrawer = () => {
             disabled={!newRubricName.trim()}
           >
             Create
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Privacy Notice Dialog */}
+      <PrivacyNotice
+        open={privacyNoticeOpen}
+        onClose={handleClosePrivacyNotice}
+      />
+
+      {/* Clear All Data Confirmation Dialog */}
+      <Dialog
+        open={clearDataDialogOpen}
+        onClose={handleCloseClearDataDialog}
+        PaperProps={{
+          sx: { zIndex: 1400 }
+        }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <DeleteForeverIcon color="error" />
+            <Typography variant="h6">Clear All Data</Typography>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Alert severity="warning" sx={{ mb: 2 }}>
+            <Typography variant="body2" fontWeight="bold" gutterBottom>
+              This action will permanently delete:
+            </Typography>
+            <Typography variant="body2" component="div">
+              • Your encrypted Canvas API token
+              <br />
+              • Canvas API base URL (if set)
+              <br />
+              • All session data
+            </Typography>
+          </Alert>
+          <Typography variant="body2" color="text.secondary">
+            You will need to re-enter your Canvas API token to use Canvas integration features again.
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            <strong>Note:</strong> This does not affect your rubrics or grading data stored locally.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseClearDataDialog}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={handleClearAllData}
+            startIcon={<DeleteForeverIcon />}
+          >
+            Clear All Data
           </Button>
         </DialogActions>
       </Dialog>

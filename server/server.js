@@ -2,14 +2,69 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
+import rateLimit from 'express-rate-limit';
+import { body, param, query, validationResult } from 'express-validator';
+import helmet from 'helmet';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// Apply security headers with helmet
+app.use(helmet({
+  // API server doesn't serve HTML, so we can disable CSP
+  contentSecurityPolicy: false,
+  // Disable HSTS (not needed for HTTP localhost)
+  hsts: false,
+  // Prevent browsers from MIME-sniffing responses
+  noSniff: true,
+  // Disable X-Powered-By header to hide Express
+  hidePoweredBy: true,
+  // Prevent clickjacking
+  frameguard: {
+    action: 'deny'
+  }
+}));
+
+// Configure CORS to only allow requests from the frontend
+const corsOptions = {
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173', // Vite default port
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+app.use(cors(corsOptions));
 app.use(express.json());
+
+// Rate limiting to prevent abuse
+// Allow 100 requests per 15 minutes per IP (reasonable for local development)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true, // Return rate limit info in `RateLimit-*` headers
+  legacyHeaders: false, // Disable `X-RateLimit-*` headers
+});
+app.use('/api/', limiter);
+
+// Middleware to extract Bearer token from Authorization header
+app.use((req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    req.apiToken = authHeader.substring(7); // Remove 'Bearer ' prefix
+  }
+  next();
+});
+
+// Validation error handler middleware
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Invalid request parameters' });
+  }
+  next();
+};
 
 // Canvas API base URL - can be configured via environment variable
 const CANVAS_API_BASE = process.env.CANVAS_API_BASE || 'https://canvas.instructure.com/api/v1';
@@ -42,11 +97,15 @@ async function canvasRequest(endpoint, apiToken, options = {}, baseUrl = CANVAS_
 
     if (!response.ok) {
       const errorText = await response.text();
-      const error = new Error(`Canvas API error: ${response.status} ${response.statusText} - ${errorText}`);
+      // Log detailed error server-side for debugging
+      console.error('Canvas API request failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        endpoint: endpoint,
+      });
+      // Return sanitized error to client
+      const error = new Error('Canvas API request failed');
       error.status = response.status;
-      error.statusText = response.statusText;
-      error.body = errorText;
-      error.url = url;
       throw error;
     }
 
@@ -57,12 +116,8 @@ async function canvasRequest(endpoint, apiToken, options = {}, baseUrl = CANVAS_
     const data = await response.json();
     return { data, requestUrl: url };
   } catch (error) {
-    console.error('Canvas API request failed:', {
-      message: error.message,
-      status: error.status,
-      endpoint: endpoint,
-      url: error.url,
-    });
+    // Error already logged above if it's a response error
+    // Re-throw with status for route handlers
     throw error;
   }
 }
@@ -86,11 +141,15 @@ async function canvasRequestAllPages(endpoint, apiToken, options = {}, baseUrl =
 
     if (!response.ok) {
       const errorText = await response.text();
-      const error = new Error(`Canvas API error: ${response.status} ${response.statusText} - ${errorText}`);
+      // Log detailed error server-side for debugging
+      console.error('Canvas API pagination request failed:', {
+        status: response.status,
+        statusText: response.statusText,
+        endpoint: endpoint,
+      });
+      // Return sanitized error to client
+      const error = new Error('Canvas API request failed');
       error.status = response.status;
-      error.statusText = response.statusText;
-      error.body = errorText;
-      error.url = nextUrl;
       throw error;
     }
 
@@ -109,11 +168,16 @@ async function canvasRequestAllPages(endpoint, apiToken, options = {}, baseUrl =
 }
 
 // Get user's courses
-app.get('/api/courses', async (req, res) => {
+app.get('/api/courses', [
+  query('unfiltered').optional().isIn(['true', 'false']),
+  query('canvasBase').optional().isURL(),
+  handleValidationErrors
+], async (req, res) => {
   try {
-    const { apiToken, unfiltered, canvasBase } = req.query;
+    const apiToken = req.apiToken; // From Authorization header
+    const { unfiltered, canvasBase } = req.query;
     if (!apiToken) {
-      return res.status(400).json({ error: 'API token required' });
+      return res.status(401).json({ error: 'Authorization required' });
     }
 
     // Fetch courses with term information and filter for active/available courses
@@ -156,18 +220,26 @@ app.get('/api/courses', async (req, res) => {
     res.set('X-Canvas-Request-Url', requestUrl);
     res.json(activeCourses);
   } catch (error) {
+    console.error('Error in /api/courses:', error.message);
     const status = error.status || 500;
-    res.status(status).json({ error: error.message });
+    const message = error.status === 401 ? 'Authorization required' : 'Failed to fetch courses';
+    res.status(status).json({ error: message });
   }
 });
 
 // Get assignments for a course
-app.get('/api/courses/:courseId/assignments', async (req, res) => {
+app.get('/api/courses/:courseId/assignments', [
+  param('courseId').isNumeric(),
+  query('canvasBase').optional().isURL(),
+  query('assignment_group_id').optional().isNumeric(),
+  handleValidationErrors
+], async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { apiToken, canvasBase, assignment_group_id } = req.query;
+    const apiToken = req.apiToken; // From Authorization header
+    const { canvasBase, assignment_group_id } = req.query;
     if (!apiToken) {
-      return res.status(400).json({ error: 'API token required' });
+      return res.status(401).json({ error: 'Authorization required' });
     }
 
     const params = new URLSearchParams();
@@ -188,18 +260,26 @@ app.get('/api/courses/:courseId/assignments', async (req, res) => {
     res.set('X-Canvas-Request-Url', requestUrl);
     res.json(data);
   } catch (error) {
+    console.error('Error in /api/courses/:courseId/assignments:', error.message);
     const status = error.status || 500;
-    res.status(status).json({ error: error.message });
+    const message = error.status === 401 ? 'Authorization required' : 'Failed to fetch assignments';
+    res.status(status).json({ error: message });
   }
 });
 
 // Get submissions for an assignment
-app.get('/api/courses/:courseId/assignments/:assignmentId/submissions', async (req, res) => {
+app.get('/api/courses/:courseId/assignments/:assignmentId/submissions', [
+  param('courseId').isNumeric(),
+  param('assignmentId').isNumeric(),
+  query('canvasBase').optional().isURL(),
+  handleValidationErrors
+], async (req, res) => {
   try {
     const { courseId, assignmentId } = req.params;
-    const { apiToken, canvasBase } = req.query;
+    const apiToken = req.apiToken; // From Authorization header
+    const { canvasBase } = req.query;
     if (!apiToken) {
-      return res.status(400).json({ error: 'API token required' });
+      return res.status(401).json({ error: 'Authorization required' });
     }
 
     const { data, requestUrl } = await canvasRequest(
@@ -211,18 +291,27 @@ app.get('/api/courses/:courseId/assignments/:assignmentId/submissions', async (r
     res.set('X-Canvas-Request-Url', requestUrl);
     res.json(data);
   } catch (error) {
+    console.error('Error in /api/courses/:courseId/assignments/:assignmentId/submissions:', error.message);
     const status = error.status || 500;
-    res.status(status).json({ error: error.message });
+    const message = error.status === 401 ? 'Authorization required' : 'Failed to fetch submissions';
+    res.status(status).json({ error: message });
   }
 });
 
 // Get a specific submission
-app.get('/api/courses/:courseId/assignments/:assignmentId/submissions/:userId', async (req, res) => {
+app.get('/api/courses/:courseId/assignments/:assignmentId/submissions/:userId', [
+  param('courseId').isNumeric(),
+  param('assignmentId').isNumeric(),
+  param('userId').isNumeric(),
+  query('canvasBase').optional().isURL(),
+  handleValidationErrors
+], async (req, res) => {
   try {
     const { courseId, assignmentId, userId } = req.params;
-    const { apiToken, canvasBase } = req.query;
+    const apiToken = req.apiToken; // From Authorization header
+    const { canvasBase } = req.query;
     if (!apiToken) {
-      return res.status(400).json({ error: 'API token required' });
+      return res.status(401).json({ error: 'Authorization required' });
     }
 
     const { data, requestUrl } = await canvasRequest(
@@ -234,19 +323,30 @@ app.get('/api/courses/:courseId/assignments/:assignmentId/submissions/:userId', 
     res.set('X-Canvas-Request-Url', requestUrl);
     res.json(data);
   } catch (error) {
+    console.error('Error in /api/courses/:courseId/assignments/:assignmentId/submissions/:userId GET:', error.message);
     const status = error.status || 500;
-    res.status(status).json({ error: error.message });
+    const message = error.status === 401 ? 'Authorization required' : 'Failed to fetch submission';
+    res.status(status).json({ error: message });
   }
 });
 
 // Update a submission (post grade and feedback)
-app.put('/api/courses/:courseId/assignments/:assignmentId/submissions/:userId', async (req, res) => {
+app.put('/api/courses/:courseId/assignments/:assignmentId/submissions/:userId', [
+  param('courseId').isNumeric(),
+  param('assignmentId').isNumeric(),
+  param('userId').isNumeric(),
+  body('posted_grade').optional().isString().trim().isLength({ max: 100 }),
+  body('comment').optional().isString().trim().isLength({ max: 10000 }),
+  body('canvasBase').optional().isURL(),
+  handleValidationErrors
+], async (req, res) => {
   try {
     const { courseId, assignmentId, userId } = req.params;
-    const { apiToken, posted_grade, comment, canvasBase } = req.body;
-    
+    const apiToken = req.apiToken; // From Authorization header
+    const { posted_grade, comment, canvasBase } = req.body;
+
     if (!apiToken) {
-      return res.status(400).json({ error: 'API token required' });
+      return res.status(401).json({ error: 'Authorization required' });
     }
 
     // First, get the assignment to determine grading type
@@ -327,18 +427,25 @@ app.put('/api/courses/:courseId/assignments/:assignmentId/submissions/:userId', 
     res.set('X-Canvas-Request-Url', requestUrl);
     res.json(data);
   } catch (error) {
+    console.error('Error in /api/courses/:courseId/assignments/:assignmentId/submissions/:userId PUT:', error.message);
     const status = error.status || 500;
-    res.status(status).json({ error: error.message });
+    const message = error.status === 401 ? 'Authorization required' : 'Failed to update submission';
+    res.status(status).json({ error: message });
   }
 });
 
 // Get assignment groups for a course
-app.get('/api/courses/:courseId/assignment-groups', async (req, res) => {
+app.get('/api/courses/:courseId/assignment-groups', [
+  param('courseId').isNumeric(),
+  query('canvasBase').optional().isURL(),
+  handleValidationErrors
+], async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { apiToken, canvasBase } = req.query;
+    const apiToken = req.apiToken; // From Authorization header
+    const { canvasBase } = req.query;
     if (!apiToken) {
-      return res.status(400).json({ error: 'API token required' });
+      return res.status(401).json({ error: 'Authorization required' });
     }
 
     const { data, requestUrl } = await canvasRequest(
@@ -350,17 +457,23 @@ app.get('/api/courses/:courseId/assignment-groups', async (req, res) => {
     res.set('X-Canvas-Request-Url', requestUrl);
     res.json(data);
   } catch (error) {
+    console.error('Error in /api/courses/:courseId/assignment-groups:', error.message);
     const status = error.status || 500;
-    res.status(status).json({ error: error.message });
+    const message = error.status === 401 ? 'Authorization required' : 'Failed to fetch assignment groups';
+    res.status(status).json({ error: message });
   }
 });
 
 // Proxy file downloads (to handle CORS)
-app.get('/api/proxy-file', async (req, res) => {
+app.get('/api/proxy-file', [
+  query('url').isURL(),
+  handleValidationErrors
+], async (req, res) => {
   try {
-    const { url, apiToken } = req.query;
+    const { url } = req.query;
+    const apiToken = req.apiToken; // From Authorization header
     if (!url || !apiToken) {
-      return res.status(400).json({ error: 'URL and API token required' });
+      return res.status(400).json({ error: 'URL and authorization required' });
     }
 
     const response = await fetch(url, {
@@ -382,12 +495,14 @@ app.get('/api/proxy-file', async (req, res) => {
     // Stream the file
     response.body.pipe(res);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Error in /api/proxy-file:', error.message);
+    res.status(500).json({ error: 'Failed to proxy file' });
   }
 });
 
+// Start HTTP server
 app.listen(PORT, () => {
-  console.log(`CritKey Pro server running on http://localhost:${PORT}`);
+  console.log(`✅ CritKey Pro server running on http://localhost:${PORT}`);
   console.log(`Canvas API Base: ${CANVAS_API_BASE}`);
 });
 

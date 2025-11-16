@@ -182,10 +182,18 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           };
         } else if (!offlineMode) {
           // Fetch PDF through proxy if we have an API token and not in offline mode
-          const url = apiToken 
-            ? `http://localhost:3001/api/proxy-file?url=${encodeURIComponent(currentFileUrl)}&apiToken=${encodeURIComponent(apiToken)}`
-            : currentFileUrl;
-          pdfSource = { url, withCredentials: false };
+          if (apiToken) {
+            const url = `http://localhost:3001/api/proxy-file?url=${encodeURIComponent(currentFileUrl)}`;
+            pdfSource = {
+              url,
+              httpHeaders: {
+                'Authorization': `Bearer ${apiToken}`,
+              },
+              withCredentials: false
+            };
+          } else {
+            pdfSource = { url: currentFileUrl, withCredentials: false };
+          }
         } else {
           throw new Error('PDF not cached and offline mode is enabled.');
         }

@@ -37,14 +37,20 @@ const CourseDebugModal = ({ open, onClose }) => {
       if (!apiToken) {
         throw new Error('API token not set.');
       }
-      const params = new URLSearchParams({ apiToken, unfiltered: 'true' });
+      const params = new URLSearchParams({ unfiltered: 'true' });
       if (canvasApiBase) {
         params.append('canvasBase', canvasApiBase);
       }
       // Fetch unfiltered courses for debugging
-      const response = await fetch(
-        `http://localhost:3001/api/courses?${params.toString()}`
-      );
+      const url = params.toString()
+        ? `http://localhost:3001/api/courses?${params.toString()}`
+        : 'http://localhost:3001/api/courses';
+      const response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
       if (!response.ok) {
         const errorText = await response.text().catch(() => null);
         let message = `Failed to fetch courses: ${response.status} ${response.statusText}`;

@@ -1,0 +1,6 @@
+# Cloudflare Worker Development Variables
+# Copy this file to .dev.vars and fill in your values
+# .dev.vars is git-ignored and only used for local development
+
+# Canvas LMS API Base URL (optional, defaults to cos.instructure.com)
+# CANVAS_BASE=https://cos.instructure.com/api/v1

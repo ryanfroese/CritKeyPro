@@ -11,9 +11,11 @@ CritKey is a fast rubric grading application with keyboard shortcuts designed fo
 This is a monorepo with three main directories:
 - **Root `package.json`**: Wrapper for deployment and development (Cloudflare Pages compatible)
   - `postinstall` script automatically installs dependencies in subdirectories
-  - `dev` script shows reminder to start backend server
+  - `dev` script shows reminder to start Cloudflare Worker
+  - `worker:dev` and `worker:deploy` scripts for Worker operations
 - **`rubric-grader/`**: React frontend application (Vite + React 18)
-- **`server/`**: Express backend proxy for Canvas API (CORS workaround)
+- **`worker/`**: Cloudflare Worker (TypeScript) - CORS proxy for Canvas API
+- **`server/`**: ⚠️ DEPRECATED - Legacy Express backend (replaced by Cloudflare Worker)
 
 ## Development Commands
 
@@ -22,28 +24,31 @@ This is a monorepo with three main directories:
 **Terminal 1 - Frontend (Root directory):**
 ```bash
 npm install      # Installs dependencies in all subdirectories (via postinstall)
-npm run dev      # Start frontend dev server (shows reminder to start backend)
+npm run dev      # Start frontend dev server (shows reminder to start Worker)
 ```
 
-**Terminal 2 - Backend:**
+**Terminal 2 - Cloudflare Worker:**
 ```bash
-cd server
-npm run dev      # Start Express backend on port 3001
+cd worker
+npm run dev      # Start Wrangler dev server on port 8787
 ```
 
 ### Individual Commands
 
 From the **root directory**:
 ```bash
-npm install      # Automatically installs in rubric-grader/ and server/ subdirectories
-npm run dev      # Start frontend (with backend reminder)
-npm run build    # Production build
-npm run preview  # Preview production build
+npm install        # Automatically installs in rubric-grader/ and worker/ subdirectories
+npm run dev        # Start frontend (with Worker reminder)
+npm run build      # Production build
+npm run preview    # Preview production build
+npm run worker:dev # Start Cloudflare Worker dev server (shortcut)
+npm run worker:deploy # Deploy Worker to Cloudflare (requires auth)
 ```
 
-From the **server/** directory:
+From the **worker/** directory:
 ```bash
-npm run dev      # Start backend server (nodemon with hot reload)
+npm run dev      # Start Wrangler dev server (localhost:8787)
+npm run deploy   # Deploy Worker to Cloudflare
 ```
 
 From the **rubric-grader/** directory:
@@ -102,24 +107,36 @@ Key methods:
 - `pushAllStagedGrades()`: Pushes all staged grades to Canvas in batch
 - `applySorting()`: Atomically updates filtered/sorted submission list
 
-### Backend Server (Express Proxy)
+### Cloudflare Worker (CORS Proxy)
 
-Located in `server/server.js`, provides CORS-enabled Canvas API proxy:
+Located in `worker/src/index.ts`, provides serverless CORS-enabled Canvas API proxy:
 
 **Key Endpoints:**
-- `POST /api/canvas/courses`: Fetch instructor courses
-- `GET /api/canvas/courses/:courseId/assignments`: Fetch course assignments
-- `GET /api/canvas/courses/:courseId/assignment_groups`: Fetch assignment groups
-- `GET /api/canvas/courses/:courseId/assignments/:assignmentId/submissions`: Fetch submissions
-- `GET /api/canvas/courses/:courseId/assignments/:assignmentId/rubric`: Fetch rubric from assignment
-- `PUT /api/canvas/courses/:courseId/assignments/:assignmentId/submissions/:userId`: Update grade/comment
-- `GET /api/canvas/proxy/*`: Generic proxy for Canvas API (handles authentication)
+- `GET /api/courses`: Fetch instructor courses (with active course filtering)
+- `GET /api/courses/:courseId/assignment-groups`: Fetch assignment groups
+- `GET /api/courses/:courseId/assignments`: Fetch course assignments (supports pagination)
+- `GET /api/courses/:courseId/assignments/:assignmentId/submissions`: Fetch all submissions
+- `GET /api/courses/:courseId/assignments/:assignmentId/submissions/:userId`: Fetch single submission
+- `PUT /api/courses/:courseId/assignments/:assignmentId/submissions/:userId`: Update grade/comment
+- `GET /api/courses/:courseId/rubrics`: Fetch all course rubrics
+- `GET /api/courses/:courseId/rubrics/:rubricId`: Fetch specific rubric
+- `GET /api/proxy-file?url=...`: Proxy PDF downloads (adds CORS headers)
 
 **Features:**
+- TypeScript implementation with full type safety
 - Automatic Canvas API token handling via `Authorization` header
-- Request/response logging for debugging
-- CORS headers for local development
-- Runs on `http://localhost:3001`
+- Grade format conversion based on assignment grading type (points/percent/pass_fail)
+- Pagination support via Link header parsing
+- CORS headers for cross-origin requests
+- Environment variable support (CANVAS_BASE)
+- Runs on:
+  - Development: `http://localhost:8787` (Wrangler)
+  - Production: `https://critkey-worker.YOUR_ACCOUNT.workers.dev` (or custom domain)
+
+**Environment Detection (`canvasStore.js`):**
+- Auto-detects localhost and uses `http://localhost:8787` for development
+- Uses `VITE_WORKER_URL` environment variable for production
+- Falls back to placeholder if not configured
 
 ### Canvas API Integration
 
@@ -296,13 +313,46 @@ The app supports inline LaTeX rendering using KaTeX:
 
 ## Deployment
 
-Configured for Cloudflare Pages:
+### Frontend (Cloudflare Pages)
+
+The frontend is deployed to Cloudflare Pages:
 - Root directory: `/`
 - Build command: `npm run build`
 - Build output: `rubric-grader/dist`
 - Node version: 18+
+- Environment variables:
+  - `VITE_WORKER_URL`: Set to your deployed Worker URL (e.g., `https://critkey-worker.YOUR_ACCOUNT.workers.dev`)
 
 The root package.json handles building from the subdirectory automatically.
+
+### Worker (Cloudflare Workers)
+
+The Worker is deployed separately using Wrangler:
+
+**First-time setup:**
+```bash
+cd worker
+npm install
+npx wrangler login  # Authenticate with Cloudflare
+```
+
+**Deploy:**
+```bash
+cd worker
+npm run deploy
+# Or from root: npm run worker:deploy
+```
+
+**Configuration:**
+- Worker name: `critkey-worker` (configured in `wrangler.toml`)
+- Default route: `https://critkey-worker.YOUR_ACCOUNT.workers.dev`
+- Environment variables (set in Cloudflare dashboard or wrangler.toml):
+  - `CANVAS_BASE`: Canvas LMS API base URL (defaults to `https://cos.instructure.com/api/v1`)
+
+**Custom domain (optional):**
+Add a route in Cloudflare dashboard to use a custom domain for your Worker.
+
+See `CLOUDFLARE_SETUP.md` for detailed deployment instructions.
 
 ## Common Tasks
 
@@ -316,11 +366,13 @@ The root package.json handles building from the subdirectory automatically.
 4. Update `ShortcutsModal.jsx` to display the new shortcut
 
 ### Adding a new Canvas API endpoint
-1. Add route to `server/server.js`
-2. Add corresponding method to `canvasStore.js`
-3. Handle authentication via `Authorization` header
-4. Add error handling and loading states
-5. Consider race condition prevention if needed (request IDs)
+1. Add route handler to `worker/src/index.ts` in the main fetch handler
+2. Implement Canvas API request using `canvasRequest()` or `canvasRequestAllPages()` helper
+3. Add corresponding method to `canvasStore.js`
+4. Handle authentication via `Authorization` header (Bearer token)
+5. Add error handling and loading states
+6. Consider race condition prevention if needed (request IDs)
+7. Return response with CORS headers
 
 ### Modifying rubric structure
 1. Update parsing in `csvParser.js`
@@ -330,10 +382,13 @@ The root package.json handles building from the subdirectory automatically.
 5. Update per-submission rubric storage if needed
 
 ### Testing Canvas integration locally
-1. Start backend server: `cd server && npm run dev`
-2. Start frontend: `npm run dev` (from root)
+1. Start Cloudflare Worker: `cd worker && npm run dev` (runs on localhost:8787)
+2. Start frontend: `npm run dev` (from root, runs on localhost:5173)
 3. Obtain Canvas API token from your Canvas account settings
-4. Test with a real Canvas course/assignment
+4. Enter token and Canvas base URL in the app
+5. Test with a real Canvas course/assignment
+
+**Note:** Frontend auto-detects localhost and uses `http://localhost:8787` for the Worker URL.
 
 ### Testing CSV import
 Example rubrics are in `Example Rubric/` directory.

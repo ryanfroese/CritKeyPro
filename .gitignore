@@ -1,12 +1,19 @@
 # Dependencies
 node_modules/
 rubric-grader/node_modules/
+worker/node_modules/
 package-lock.json
 
 # Build outputs
 dist/
 rubric-grader/dist/
 rubric-grader/dist-ssr/
+worker/dist/
+
+# Cloudflare Worker
+worker/.wrangler/
+worker/.dev.vars
+.dev.vars
 
 # Logs
 *.log

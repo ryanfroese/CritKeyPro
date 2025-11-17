@@ -20,7 +20,23 @@ import {
   removeSecureItem
 } from '../utils/secureStorage';
 
-const API_BASE = 'http://localhost:3001';
+// Auto-detect API base URL based on environment
+const API_BASE = (() => {
+  // Development: use Wrangler dev server (localhost:8787)
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return 'http://localhost:8787';
+  }
+
+  // Production: use environment variable or deployed Worker URL
+  // Set VITE_WORKER_URL in .env file or Cloudflare Pages environment variables
+  // Example: VITE_WORKER_URL=https://critkey-worker.YOUR_ACCOUNT.workers.dev
+  const workerUrl = import.meta.env.VITE_WORKER_URL;
+  if (!workerUrl) {
+    console.error('VITE_WORKER_URL environment variable not set. Please configure your Cloudflare Worker URL.');
+    return 'https://critkey-worker.YOUR_ACCOUNT.workers.dev'; // Placeholder
+  }
+  return workerUrl;
+})();
 
 // Debug feature flag - set to true to enable debug logging
 const DEBUG = false;
@@ -34,9 +50,9 @@ const debugLog = (...args) => {
 
 // Helper function to provide user-friendly error messages
 const getErrorMessage = (error) => {
-  // Detect connection errors (server not running)
+  // Detect connection errors (Worker not running)
   if (error.message.includes('Failed to fetch') || error.name === 'TypeError') {
-    return 'Backend server not running. Please start the server with: cd server && npm run dev';
+    return 'Cloudflare Worker not running. Please start the Worker with: cd worker && npm run dev';
   }
   return error.message;
 };

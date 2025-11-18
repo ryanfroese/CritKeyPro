@@ -21,6 +21,7 @@ import {
   NavigateNext,
   Settings as SettingsIcon,
 } from '@mui/icons-material';
+import { ScaleLoader } from 'react-spinners';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import useCanvasStore from '../store/canvasStore';
@@ -58,6 +59,7 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
   const userZoomRatioRef = useRef(1.0); // Track user's zoom relative to initial scale
   const previousInitialScaleRef = useRef(1.0);
   const pageRefs = useRef({});
+  const currentRenderSessionRef = useRef(0); // Track render sessions to prevent race conditions
 
   // Helper function to wait for PDF cache using event-driven approach
   const waitForPdfCache = async (fileUrl, assignmentId, submissionId, signal, maxWaitTime = 60000) => {
@@ -451,22 +453,60 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
   useEffect(() => {
     if (!pdfDoc || numPages === 0) return;
 
+    // Increment session ID to invalidate previous renders
+    currentRenderSessionRef.current += 1;
+    const thisSessionId = currentRenderSessionRef.current;
+
     const renderAllPages = async () => {
       for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+        // Check if this session is still current before each page
+        if (thisSessionId !== currentRenderSessionRef.current) {
+          console.log(`[PDFViewer] Render session ${thisSessionId} aborted, stopping render`);
+          return;
+        }
+
         try {
           // Cancel any ongoing render operation for this page
           if (renderTaskRefs.current[pageNum]) {
             renderTaskRefs.current[pageNum].cancel();
+            // CRITICAL: Wait for cancellation to complete
+            try {
+              await renderTaskRefs.current[pageNum].promise;
+            } catch (err) {
+              // Cancellation throws, which is expected
+              if (err.name !== 'RenderingCancelledException') {
+                console.warn(`[PDFViewer] Unexpected error during cancellation:`, err);
+              }
+            }
             renderTaskRefs.current[pageNum] = null;
           }
 
+          // Check again after async cancellation
+          if (thisSessionId !== currentRenderSessionRef.current) {
+            console.log(`[PDFViewer] Session ${thisSessionId} aborted after cancellation`);
+            return;
+          }
+
           const page = await pdfDoc.getPage(pageNum);
+
+          // Check again after async page load
+          if (thisSessionId !== currentRenderSessionRef.current) {
+            console.log(`[PDFViewer] Session ${thisSessionId} aborted after page load`);
+            return;
+          }
+
           const viewport = page.getViewport({ scale });
 
           const canvas = canvasRefs.current[pageNum];
           if (!canvas) {
             // Canvas not mounted yet, skip
             continue;
+          }
+
+          // Final check before rendering
+          if (thisSessionId !== currentRenderSessionRef.current) {
+            console.log(`[PDFViewer] Session ${thisSessionId} aborted before render`);
+            return;
           }
 
           const context = canvas.getContext('2d');
@@ -483,14 +523,17 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           renderTaskRefs.current[pageNum] = renderTask;
 
           await renderTask.promise;
-          renderTaskRefs.current[pageNum] = null;
-          
-          // Mark page as rendered
-          setRenderedPages(prev => new Set([...prev, pageNum]));
+
+          // Check if still current after render completes
+          if (thisSessionId === currentRenderSessionRef.current) {
+            renderTaskRefs.current[pageNum] = null;
+            // Mark page as rendered
+            setRenderedPages(prev => new Set([...prev, pageNum]));
+          }
         } catch (err) {
           // Ignore cancellation errors
           if (err.name !== 'RenderingCancelledException') {
-            console.error(`Error rendering page ${pageNum}:`, err);
+            console.error(`[PDFViewer] Error rendering page ${pageNum}:`, err);
             if (pageNum === 1) {
               setError(err.message);
             }
@@ -502,11 +545,28 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
 
     renderAllPages();
 
-    // Cleanup: cancel all renders when component unmounts or dependencies change
+    // Cleanup: invalidate this render session and cancel all renders
     return () => {
-      Object.values(renderTaskRefs.current).forEach(task => {
-        if (task) task.cancel();
+      // Invalidate this render session
+      currentRenderSessionRef.current += 1;
+
+      // Cancel all render tasks and await their completion
+      const cancelPromises = Object.entries(renderTaskRefs.current).map(async ([pageNum, task]) => {
+        if (task) {
+          task.cancel();
+          try {
+            await task.promise;
+          } catch (err) {
+            // Expected cancellation error
+            if (err.name !== 'RenderingCancelledException') {
+              console.warn(`[PDFViewer] Unexpected error during cleanup:`, err);
+            }
+          }
+        }
       });
+
+      // Start all cancellations (don't need to await in cleanup)
+      Promise.all(cancelPromises);
       renderTaskRefs.current = {};
     };
   }, [pdfDoc, numPages, scale]);
@@ -651,12 +711,24 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
 
   if (loading || waitingForCache) {
     return (
-      <Paper sx={{ p: 3, textAlign: 'center', minHeight: 400, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2 }}>
-        <Typography>
-          {waitingForCache 
+      <Paper sx={{ p: 3, textAlign: 'center', minHeight: 400, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3 }}>
+        {/* Rendering animation - only show when actually rendering */}
+        {!waitingForCache && (
+          <ScaleLoader
+            color="#1976d2"
+            height={35}
+            width={4}
+            radius={2}
+            margin={2}
+          />
+        )}
+
+        <Typography variant="h6" color="text.secondary">
+          {waitingForCache
             ? `Waiting for PDF to cache... (${cachingProgress.current}/${cachingProgress.total})`
-            : 'Loading PDF...'}
+            : 'Rendering Submission'}
         </Typography>
+
         {waitingForCache && cachingProgress.isCaching && (
           <Box sx={{ width: '300px' }}>
             <Slider

@@ -24,6 +24,7 @@
     "react-dom": "^19.1.1",
     "react-hotkeys-hook": "^5.2.1",
     "react-katex": "^3.0.2",
+    "react-spinners": "^0.17.0",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

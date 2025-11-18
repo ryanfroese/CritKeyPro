@@ -23,7 +23,7 @@ import {
 const API_BASE = 'http://localhost:3001';
 
 // Debug feature flag - set to true to enable debug logging
-const DEBUG = false;
+const DEBUG = import.meta.env.DEV; // Auto-enable in dev, disable in prod
 
 // Debug logging helper - only logs when DEBUG is true
 const debugLog = (...args) => {
@@ -389,8 +389,24 @@ const useCanvasStore = create((set, get) => ({
     } catch (error) {
       console.error('Error caching PDFs:', error);
     } finally {
-      set({ cachingProgress: { current: 0, total: 0, isCaching: false } });
+      // Preserve progress counts when stopping (don't reset to 0/0)
+      set((state) => ({
+        cachingProgress: {
+          ...state.cachingProgress,
+          isCaching: false
+        }
+      }));
     }
+  },
+
+  // Wrapper for manual PDF caching from UI (provides currentAssignmentRequestId)
+  cacheAllPdfsManual: () => {
+    const { currentAssignmentRequestId } = get();
+    if (!currentAssignmentRequestId) {
+      console.warn('[cacheAllPdfsManual] No assignment selected for caching');
+      return;
+    }
+    get().cacheAllPdfs(currentAssignmentRequestId);
   },
 
   // Get cached PDF blob URL

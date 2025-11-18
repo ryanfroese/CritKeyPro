@@ -61,7 +61,7 @@ const CanvasIntegration = () => {
     lastRequestUrls,
     offlineMode,
     setOfflineMode,
-    cacheAllPdfs,
+    cacheAllPdfsManual,
     cachingProgress,
     parallelDownloadLimit,
     setParallelDownloadLimit,
@@ -81,6 +81,7 @@ const CanvasIntegration = () => {
   const [selectedCourseRubricId, setSelectedCourseRubricId] = useState('');
   const [importSuccess, setImportSuccess] = useState(null);
   const [importError, setImportError] = useState(null);
+  const [isConnecting, setIsConnecting] = useState(false);
 
   useEffect(() => {
     initialize();
@@ -100,11 +101,16 @@ const CanvasIntegration = () => {
     }
   }, [apiToken, hasAutoConnected, loadingCourses, courses.length, fetchCourses]);
 
-  const handleSaveConfig = () => {
+  const handleSaveConfig = async () => {
     setApiToken(localApiToken);
     setCanvasApiBase(localApiBase);
     if (localApiToken) {
-      fetchCourses();
+      setIsConnecting(true);
+      try {
+        await fetchCourses();
+      } finally {
+        setIsConnecting(false);
+      }
     }
   };
 
@@ -266,8 +272,13 @@ const CanvasIntegration = () => {
           size="small"
           helperText="Leave as default for Canvas Cloud, or use your school's Canvas URL"
         />
-        <Button variant="contained" onClick={handleSaveConfig} disabled={!localApiToken}>
-          Save & Connect
+        <Button
+          variant="contained"
+          onClick={handleSaveConfig}
+          disabled={!localApiToken || isConnecting}
+          startIcon={isConnecting ? <CircularProgress size={20} color="inherit" /> : null}
+        >
+          {isConnecting ? 'Connecting...' : (courses.length > 0 ? 'Refresh Canvas Connection' : 'Save & Connect')}
         </Button>
       </Stack>
 
@@ -317,7 +328,7 @@ const CanvasIntegration = () => {
           <Button
             variant="outlined"
             startIcon={<CloudDownloadIcon />}
-            onClick={cacheAllPdfs}
+            onClick={cacheAllPdfsManual}
             disabled={cachingProgress.isCaching}
             fullWidth
           >

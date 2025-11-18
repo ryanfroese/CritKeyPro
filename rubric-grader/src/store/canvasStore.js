@@ -950,13 +950,13 @@ const useCanvasStore = create((set, get) => ({
         const isGradedInCanvas = (canvasGrade !== null && canvasGrade !== undefined) && !isAutoGradedZero;
         const hasRubricScore = rubricScores[submissionId] !== undefined;
         const hasStagedGrade = stagedGrades[submissionId] !== undefined;
-        
+
         // Determine submission status
         const status = isLate ? 'late' : (isAutoGradedZero ? 'auto-graded' : null);
-        
+
         return {
           ...sub,
-          isGraded: isGradedInCanvas || hasRubricScore || hasStagedGrade,
+          isGraded: isGradedInCanvas || hasStagedGrade,
           canvasGrade: canvasGrade,
           canvasScore: canvasScore,
           rubricScore: rubricScores[submissionId] || null,

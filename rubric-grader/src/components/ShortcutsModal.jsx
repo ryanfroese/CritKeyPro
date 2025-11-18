@@ -167,6 +167,25 @@ const ShortcutsModal = ({ open, onClose }) => {
               </Box>
             </Stack>
           </Box>
+
+          <Divider />
+
+          {/* PDF Controls */}
+          <Box>
+            <Typography variant="h6" gutterBottom fontWeight="bold">
+              PDF Controls
+            </Typography>
+            <Stack spacing={1} sx={{ pl: 2 }}>
+              <Box>
+                <Typography variant="body2" component="span" fontWeight="medium">
+                  {formatHotkeyDisplay(hotkeys.rotatePdf)}
+                </Typography>
+                <Typography variant="body2" component="span" sx={{ ml: 1 }}>
+                  Rotate PDF pages 90° clockwise
+                </Typography>
+              </Box>
+            </Stack>
+          </Box>
         </Stack>
       </DialogContent>
       <DialogActions>

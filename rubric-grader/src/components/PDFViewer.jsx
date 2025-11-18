@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, memo } from 'react';
 import {
   Box,
   Paper,
@@ -21,28 +21,31 @@ import {
   NavigateBefore,
   NavigateNext,
   Settings as SettingsIcon,
+  RotateRight,
 } from '@mui/icons-material';
 import { ScaleLoader } from 'react-spinners';
 import { GlobalWorkerOptions, getDocument } from 'pdfjs-dist';
 import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { useHotkeys } from 'react-hotkeys-hook';
 import useCanvasStore from '../store/canvasStore';
 import { getCachedPdf } from '../utils/pdfCache';
 import { getPdfInitialZoom, savePdfInitialZoom, getPdfGridMode, savePdfGridMode, getPdfGridColumns, savePdfGridColumns, getPdfPersistZoom, savePdfPersistZoom } from '../utils/localStorage';
-import StudentSelector from './StudentSelector';
+import { useHotkeyConfig } from '../hooks/useHotkeyConfig';
 
 // Configure PDF.js worker to use local bundled file
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
-const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious }) => {
+const PDFViewer = ({ fileUrls = [], apiToken, onNext, onPrevious, hasNext, hasPrevious }) => {
   const { offlineMode, cachingProgress, selectedSubmission, selectedAssignment, allSubmissions } = useCanvasStore();
-  const [pdfDoc, setPdfDoc] = useState(null);
-  const [numPages, setNumPages] = useState(0);
+  const [pdfDocs, setPdfDocs] = useState([]); // Array of PDF documents
+  const [numPages, setNumPages] = useState(0); // Total pages across all PDFs
   const [scale, setScale] = useState(1.0);
   const [initialScale, setInitialScale] = useState(1.0);
   const [initialZoomPercent, setInitialZoomPercent] = useState(() => getPdfInitialZoom());
   const [gridMode, setGridMode] = useState(() => getPdfGridMode());
   const [gridColumns, setGridColumns] = useState(() => getPdfGridColumns());
   const [persistZoom, setPersistZoom] = useState(() => getPdfPersistZoom());
+  const [rotation, setRotation] = useState(0); // Rotation in degrees: 0, 90, 180, 270
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [waitingForCache, setWaitingForCache] = useState(false);
@@ -61,6 +64,13 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
   const previousInitialScaleRef = useRef(1.0);
   const pageRefs = useRef({});
   const currentRenderSessionRef = useRef(0); // Track render sessions to prevent race conditions
+
+  const hotkeys = useHotkeyConfig();
+
+  // Reset rotation when submission changes
+  useEffect(() => {
+    setRotation(0);
+  }, [selectedSubmission?.id, selectedSubmission?.user_id]);
 
   // Helper function to wait for PDF cache using polling approach
   const waitForPdfCache = async (fileUrl, assignmentId, submissionId, signal, maxWaitTime = 60000) => {
@@ -152,16 +162,16 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
     });
   };
 
-  // Load PDF document
+  // Load PDF documents
   useEffect(() => {
-    // Check if we have either a fileUrl OR assignmentId + submissionId
+    // Check if we have either fileUrls OR assignmentId + submissionId
     const submissionId = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
     const assignmentId = selectedAssignment ? String(selectedAssignment.id) : null;
     const hasIds = assignmentId && submissionId;
 
-    if (!fileUrl && !hasIds) {
-      // No fileUrl and no IDs - can't load anything
-      setPdfDoc(null);
+    if (fileUrls.length === 0 && !hasIds) {
+      // No fileUrls and no IDs - can't load anything
+      setPdfDocs([]);
       setNumPages(0);
       setLoading(false);
       setWaitingForCache(false);
@@ -174,107 +184,139 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
       return;
     }
 
-    // Reset loaded state when fileUrl or selection changes
+    // Reset loaded state when fileUrls or selection changes
     setPdfLoaded(false);
     setLoading(true);
     setError(null);
 
-    // Update the ref to track current fileUrl
-    currentFileUrlRef.current = fileUrl;
+    // Update the ref to track current fileUrls (join them for comparison)
+    const fileUrlsKey = fileUrls.join('|');
+    currentFileUrlRef.current = fileUrlsKey;
 
-    const loadPdf = async () => {
+    const loadPdfs = async () => {
       // Create AbortController for this loading operation
       const abortController = new AbortController();
       abortControllerRef.current = abortController;
 
-      // Store the current fileUrl to check if it changed during loading
-      const currentFileUrl = fileUrl;
+      // Store the current fileUrls to check if they changed during loading
+      const currentFileUrls = [...fileUrls];
+      const currentFileUrlsKey = fileUrlsKey;
       const currentSubmissionId = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
       const currentAssignmentId = selectedAssignment ? String(selectedAssignment.id) : null;
 
       try {
-        let pdfSource;
+        const loadedPdfDocs = [];
+        let totalPages = 0;
 
-        // Try to load from cache first (always check cache, regardless of offline mode)
-        // Primary lookup: by assignmentId + submissionId (most reliable)
-        // This works even if fileUrl is null
-        let cachedBlob = await getCachedPdf(currentFileUrl || '', {
-          assignmentId: currentAssignmentId,
-          submissionId: currentSubmissionId,
-        });
+        // Load each PDF sequentially
+        for (let i = 0; i < currentFileUrls.length; i++) {
+          const fileUrl = currentFileUrls[i];
+          let pdfSource;
 
-        // If not found and we're in offline mode, wait for caching to complete
-        if (!cachedBlob && offlineMode) {
-          // Check if caching is in progress
-          const currentProgress = useCanvasStore.getState().cachingProgress;
-          if (currentProgress.isCaching) {
-            setWaitingForCache(true);
-            try {
-              // Use event-driven approach instead of polling
-              cachedBlob = await waitForPdfCache(
-                currentFileUrl,
-                currentAssignmentId,
-                currentSubmissionId,
-                abortController.signal
-              );
-            } catch (err) {
-              setWaitingForCache(false);
-              if (err.message === 'Aborted') {
-                return; // Silently abort
+          // Check if aborted before processing each PDF
+          if (abortController.signal.aborted) {
+            // Clean up any loaded PDFs before aborting
+            loadedPdfDocs.forEach(doc => doc.destroy());
+            return;
+          }
+
+          // Try to load from cache first (always check cache, regardless of offline mode)
+          // Primary lookup: by assignmentId + submissionId (most reliable)
+          // This works even if fileUrl is null
+          let cachedBlob = await getCachedPdf(fileUrl || '', {
+            assignmentId: currentAssignmentId,
+            submissionId: currentSubmissionId,
+          });
+
+          // If not found and we're in offline mode, wait for caching to complete
+          if (!cachedBlob && offlineMode) {
+            // Check if caching is in progress
+            const currentProgress = useCanvasStore.getState().cachingProgress;
+            if (currentProgress.isCaching) {
+              setWaitingForCache(true);
+              try {
+                // Use event-driven approach instead of polling
+                cachedBlob = await waitForPdfCache(
+                  fileUrl,
+                  currentAssignmentId,
+                  currentSubmissionId,
+                  abortController.signal
+                );
+              } catch (err) {
+                setWaitingForCache(false);
+                if (err.message === 'Aborted') {
+                  // Clean up any loaded PDFs before aborting
+                  loadedPdfDocs.forEach(doc => doc.destroy());
+                  return; // Silently abort
+                }
+                // Don't re-throw - fall through to network fallback
+                console.warn('[PDFViewer] PDF not found in cache after waiting, will attempt network fetch');
               }
-              // Don't re-throw - fall through to network fallback
-              console.warn('[PDFViewer] PDF not found in cache after waiting, will attempt network fetch');
+              setWaitingForCache(false);
             }
-            setWaitingForCache(false);
+
+            // If still not cached, fall through to network fetch
+            // This handles cases where PDF failed to cache during cacheAllPdfs()
+            if (!cachedBlob) {
+              console.warn('[PDFViewer] PDF not cached (cache miss or failed download), falling back to network fetch');
+            }
           }
 
-          // If still not cached, fall through to network fetch
-          // This handles cases where PDF failed to cache during cacheAllPdfs()
-          if (!cachedBlob) {
-            console.warn('[PDFViewer] PDF not cached (cache miss or failed download), falling back to network fetch');
+          // Check if fileUrls or selection changed before proceeding
+          const currentSubmissionIdCheck = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
+          const currentAssignmentIdCheck = selectedAssignment ? String(selectedAssignment.id) : null;
+          if (currentFileUrlsKey !== currentFileUrlRef.current ||
+              currentSubmissionIdCheck !== currentSubmissionId ||
+              currentAssignmentIdCheck !== currentAssignmentId) {
+            // Clean up any loaded PDFs before aborting
+            loadedPdfDocs.forEach(doc => doc.destroy());
+            return; // Abort loading
           }
-        }
-        
-        // Check if fileUrl or selection changed before proceeding
-        const currentSubmissionIdCheck = selectedSubmission ? String(selectedSubmission.user_id || selectedSubmission.id) : null;
-        const currentAssignmentIdCheck = selectedAssignment ? String(selectedAssignment.id) : null;
-        if (currentFileUrl !== currentFileUrlRef.current ||
-            currentSubmissionIdCheck !== currentSubmissionId ||
-            currentAssignmentIdCheck !== currentAssignmentId) {
-          return; // Abort loading
-        }
-        
-        if (cachedBlob) {
-          // Convert blob to ArrayBuffer for PDF.js
-          const arrayBuffer = await cachedBlob.arrayBuffer();
-          pdfSource = {
-            data: arrayBuffer,
-          };
-        } else {
-          // Fallback to network fetch if PDF not in cache
-          // This handles: cache miss, failed cache download, or online mode
-          if (apiToken) {
-            const url = `http://localhost:3001/api/proxy-file?url=${encodeURIComponent(currentFileUrl)}`;
+
+          if (cachedBlob) {
+            // Convert blob to ArrayBuffer for PDF.js
+            const arrayBuffer = await cachedBlob.arrayBuffer();
             pdfSource = {
-              url,
-              httpHeaders: {
-                'Authorization': `Bearer ${apiToken}`,
-              },
-              withCredentials: false
+              data: arrayBuffer,
             };
           } else {
-            pdfSource = { url: currentFileUrl, withCredentials: false };
+            // Fallback to network fetch if PDF not in cache
+            // This handles: cache miss, failed cache download, or online mode
+            if (apiToken) {
+              const url = `http://localhost:3001/api/proxy-file?url=${encodeURIComponent(fileUrl)}`;
+              pdfSource = {
+                url,
+                httpHeaders: {
+                  'Authorization': `Bearer ${apiToken}`,
+                },
+                withCredentials: false
+              };
+            } else {
+              pdfSource = { url: fileUrl, withCredentials: false };
+            }
           }
+
+          const loadingTask = getDocument(pdfSource);
+          loadingTaskRef.current = loadingTask;
+          const pdf = await loadingTask.promise;
+
+          // Check again if fileUrls or selection changed after loading
+          if (currentFileUrlsKey !== currentFileUrlRef.current) {
+            // PDF loaded but we're no longer on this file, destroy it and abort
+            pdf.destroy();
+            loadedPdfDocs.forEach(doc => doc.destroy());
+            return;
+          }
+
+          // Add this PDF to the loaded array and update total pages
+          loadedPdfDocs.push(pdf);
+          totalPages += pdf.numPages;
         }
 
-        const loadingTask = getDocument(pdfSource);
-        loadingTaskRef.current = loadingTask;
-        const pdf = await loadingTask.promise;
-        
-        // Check if this loading task is still current and fileUrl hasn't changed
-        if (loadingTaskRef.current === loadingTask && currentFileUrl === currentFileUrlRef.current) {
-          setPdfDoc(pdf);
-          setNumPages(pdf.numPages);
+        // All PDFs loaded successfully - update state
+        if (currentFileUrlsKey === currentFileUrlRef.current) {
+          setPdfDocs(loadedPdfDocs);
+          setNumPages(totalPages);
           setLoading(false);
           setPdfLoaded(true); // Mark as loaded to prevent further polling
           setRenderedPages(new Set());
@@ -282,20 +324,20 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           renderTaskRefs.current = {};
           pageRefs.current = {};
           loadingTaskRef.current = null;
-          
-          // Reset scroll position to top when new PDF loads
+
+          // Reset scroll position to top when new PDFs load
           if (containerRef.current) {
             containerRef.current.scrollTop = 0;
           }
         } else {
-          // PDF loaded but we're no longer on this file, destroy it
-          pdf.destroy();
+          // fileUrls changed during loading, destroy all loaded PDFs
+          loadedPdfDocs.forEach(doc => doc.destroy());
         }
       } catch (err) {
-        // Only set error if this is still the current loading task and fileUrl hasn't changed
-        if (loadingTaskRef.current && currentFileUrl === currentFileUrlRef.current) {
+        // Only set error if this is still the current loading task and fileUrls haven't changed
+        if (currentFileUrlsKey === currentFileUrlRef.current) {
           // Ignore cancellation/abort errors
-          if (err.name !== 'AbortException' && 
+          if (err.name !== 'AbortException' &&
               err.name !== 'RenderingCancelledException' &&
               err.message !== 'The loading task was aborted') {
             console.error('Error loading PDF:', err);
@@ -309,9 +351,9 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
       }
     };
 
-    loadPdf();
+    loadPdfs();
 
-    // Cleanup: abort loading, clear polling intervals, and cancel renders/loads when component unmounts or fileUrl changes
+    // Cleanup: abort loading, clear polling intervals, and cancel renders/loads when component unmounts or fileUrls changes
     return () => {
       // Abort any in-flight PDF cache waiting
       if (abortControllerRef.current) {
@@ -331,15 +373,21 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
         loadingTaskRef.current.destroy();
         loadingTaskRef.current = null;
       }
-      // Reset PDF document to prevent stale renders
-      setPdfDoc(null);
+      // Destroy all PDF documents to prevent stale renders
+      if (previousPdfDocRef.current) {
+        if (Array.isArray(previousPdfDocRef.current)) {
+          previousPdfDocRef.current.forEach(doc => doc.destroy());
+        }
+        previousPdfDocRef.current = null;
+      }
+      setPdfDocs([]);
     };
-  }, [fileUrl, apiToken, offlineMode, selectedSubmission?.user_id, selectedSubmission?.id, selectedAssignment?.id]); // Include selection IDs so we reload when selection changes
+  }, [fileUrls, apiToken, offlineMode, selectedSubmission?.user_id, selectedSubmission?.id, selectedAssignment?.id]); // Include selection IDs so we reload when selection changes
 
-  // Reset scroll position when PDF document changes or when pages are rendered
+  // Reset scroll position when PDF documents change or when pages are rendered
   useEffect(() => {
-    if (pdfDoc && containerRef.current) {
-      // Reset scroll to top when a new PDF is loaded
+    if (pdfDocs.length > 0 && containerRef.current) {
+      // Reset scroll to top when new PDFs are loaded
       // Use a small delay to ensure layout is complete
       const resetScroll = () => {
         if (containerRef.current) {
@@ -352,30 +400,32 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           });
         }
       };
-      
+
       // Reset immediately and after a short delay to catch any layout shifts
       resetScroll();
       setTimeout(resetScroll, 100);
     }
-  }, [pdfDoc]);
+  }, [pdfDocs]);
 
   // Calculate initial scale to fit PDF in viewer and grid columns
   useEffect(() => {
-    if (!pdfDoc || !containerRef.current) return;
+    if (pdfDocs.length === 0 || !containerRef.current) return;
 
     const calculateInitialScale = async () => {
       try {
-        const page = await pdfDoc.getPage(1);
+        // Use the first PDF to calculate scale (all pages will use the same scale)
+        const firstPdf = pdfDocs[0];
+        const page = await firstPdf.getPage(1);
         const viewport = page.getViewport({ scale: 1.0 });
-        
+
         // Get container dimensions (accounting for padding)
         const container = containerRef.current;
         if (!container) return;
-        
+
         const containerRect = container.getBoundingClientRect();
         // Use configured initial zoom percentage of container width
         const zoomFactor = initialZoomPercent / 100;
-        
+
         if (gridMode) {
           // In grid mode, use user-specified number of columns and adjust scale to fit
           const pageWidth = viewport.width;
@@ -390,9 +440,9 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           // In grid mode, use full column width (ignore initial zoom percentage)
           const targetPageWidth = columnWidth;
           const fitScale = targetPageWidth / pageWidth;
-          
-          const isNewPdf = previousPdfDocRef.current !== pdfDoc;
-          previousPdfDocRef.current = pdfDoc;
+
+          const isNewPdf = previousPdfDocRef.current !== pdfDocs;
+          previousPdfDocRef.current = pdfDocs;
 
           if (isNewPdf && !persistZoom) {
             // New PDF and persist zoom is OFF - reset zoom to 100%
@@ -413,9 +463,9 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
           // Account for padding (16px on each side = 32px total)
           const availableWidth = (containerRect.width - 32) * zoomFactor;
           const fitScale = availableWidth / viewport.width;
-          
-          const isNewPdf = previousPdfDocRef.current !== pdfDoc;
-          previousPdfDocRef.current = pdfDoc;
+
+          const isNewPdf = previousPdfDocRef.current !== pdfDocs;
+          previousPdfDocRef.current = pdfDocs;
 
           if (isNewPdf && !persistZoom) {
             // New PDF and persist zoom is OFF - reset zoom to 100%
@@ -451,98 +501,109 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
     return () => {
       resizeObserver.disconnect();
     };
-  }, [pdfDoc, initialZoomPercent, gridMode, gridColumns, persistZoom]);
+  }, [pdfDocs, initialZoomPercent, gridMode, gridColumns, persistZoom]);
 
-  // Render all PDF pages
+  // Render all PDF pages from all documents
   useEffect(() => {
-    if (!pdfDoc || numPages === 0) return;
+    if (pdfDocs.length === 0 || numPages === 0) return;
 
     // Increment session ID to invalidate previous renders
     currentRenderSessionRef.current += 1;
     const thisSessionId = currentRenderSessionRef.current;
 
     const renderAllPages = async () => {
-      for (let pageNum = 1; pageNum <= numPages; pageNum++) {
-        // Check if this session is still current before each page
-        if (thisSessionId !== currentRenderSessionRef.current) {
-          console.log(`[PDFViewer] Render session ${thisSessionId} aborted, stopping render`);
-          return;
-        }
+      let globalPageNum = 1; // Sequential page number across all PDFs
 
-        try {
-          // Cancel any ongoing render operation for this page
-          if (renderTaskRefs.current[pageNum]) {
-            renderTaskRefs.current[pageNum].cancel();
-            // CRITICAL: Wait for cancellation to complete
-            try {
-              await renderTaskRefs.current[pageNum].promise;
-            } catch (err) {
-              // Cancellation throws, which is expected
-              if (err.name !== 'RenderingCancelledException') {
-                console.warn(`[PDFViewer] Unexpected error during cancellation:`, err);
+      // Iterate through all PDF documents
+      for (let pdfIndex = 0; pdfIndex < pdfDocs.length; pdfIndex++) {
+        const pdfDoc = pdfDocs[pdfIndex];
+
+        // Render all pages from this PDF
+        for (let localPageNum = 1; localPageNum <= pdfDoc.numPages; localPageNum++) {
+          // Check if this session is still current before each page
+          if (thisSessionId !== currentRenderSessionRef.current) {
+            console.log(`[PDFViewer] Render session ${thisSessionId} aborted, stopping render`);
+            return;
+          }
+
+          try {
+            // Cancel any ongoing render operation for this page
+            if (renderTaskRefs.current[globalPageNum]) {
+              renderTaskRefs.current[globalPageNum].cancel();
+              // CRITICAL: Wait for cancellation to complete
+              try {
+                await renderTaskRefs.current[globalPageNum].promise;
+              } catch (err) {
+                // Cancellation throws, which is expected
+                if (err.name !== 'RenderingCancelledException') {
+                  console.warn(`[PDFViewer] Unexpected error during cancellation:`, err);
+                }
+              }
+              renderTaskRefs.current[globalPageNum] = null;
+            }
+
+            // Check again after async cancellation
+            if (thisSessionId !== currentRenderSessionRef.current) {
+              console.log(`[PDFViewer] Session ${thisSessionId} aborted after cancellation`);
+              return;
+            }
+
+            const page = await pdfDoc.getPage(localPageNum);
+
+            // Check again after async page load
+            if (thisSessionId !== currentRenderSessionRef.current) {
+              console.log(`[PDFViewer] Session ${thisSessionId} aborted after page load`);
+              return;
+            }
+
+            const viewport = page.getViewport({ scale, rotation });
+
+            const canvas = canvasRefs.current[globalPageNum];
+            if (!canvas) {
+              // Canvas not mounted yet, skip
+              globalPageNum++;
+              continue;
+            }
+
+            // Final check before rendering
+            if (thisSessionId !== currentRenderSessionRef.current) {
+              console.log(`[PDFViewer] Session ${thisSessionId} aborted before render`);
+              return;
+            }
+
+            const context = canvas.getContext('2d');
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+
+            const renderContext = {
+              canvasContext: context,
+              viewport: viewport,
+            };
+
+            // Store the render task so we can cancel it if needed
+            const renderTask = page.render(renderContext);
+            renderTaskRefs.current[globalPageNum] = renderTask;
+
+            await renderTask.promise;
+
+            // Check if still current after render completes
+            if (thisSessionId === currentRenderSessionRef.current) {
+              renderTaskRefs.current[globalPageNum] = null;
+              // Mark page as rendered
+              setRenderedPages(prev => new Set([...prev, globalPageNum]));
+            }
+          } catch (err) {
+            // Ignore cancellation errors
+            if (err.name !== 'RenderingCancelledException') {
+              console.error(`[PDFViewer] Error rendering page ${globalPageNum} (PDF ${pdfIndex + 1}, page ${localPageNum}):`, err);
+              if (globalPageNum === 1) {
+                setError(err.message);
               }
             }
-            renderTaskRefs.current[pageNum] = null;
+            renderTaskRefs.current[globalPageNum] = null;
           }
 
-          // Check again after async cancellation
-          if (thisSessionId !== currentRenderSessionRef.current) {
-            console.log(`[PDFViewer] Session ${thisSessionId} aborted after cancellation`);
-            return;
-          }
-
-          const page = await pdfDoc.getPage(pageNum);
-
-          // Check again after async page load
-          if (thisSessionId !== currentRenderSessionRef.current) {
-            console.log(`[PDFViewer] Session ${thisSessionId} aborted after page load`);
-            return;
-          }
-
-          const viewport = page.getViewport({ scale });
-
-          const canvas = canvasRefs.current[pageNum];
-          if (!canvas) {
-            // Canvas not mounted yet, skip
-            continue;
-          }
-
-          // Final check before rendering
-          if (thisSessionId !== currentRenderSessionRef.current) {
-            console.log(`[PDFViewer] Session ${thisSessionId} aborted before render`);
-            return;
-          }
-
-          const context = canvas.getContext('2d');
-          canvas.height = viewport.height;
-          canvas.width = viewport.width;
-
-          const renderContext = {
-            canvasContext: context,
-            viewport: viewport,
-          };
-
-          // Store the render task so we can cancel it if needed
-          const renderTask = page.render(renderContext);
-          renderTaskRefs.current[pageNum] = renderTask;
-
-          await renderTask.promise;
-
-          // Check if still current after render completes
-          if (thisSessionId === currentRenderSessionRef.current) {
-            renderTaskRefs.current[pageNum] = null;
-            // Mark page as rendered
-            setRenderedPages(prev => new Set([...prev, pageNum]));
-          }
-        } catch (err) {
-          // Ignore cancellation errors
-          if (err.name !== 'RenderingCancelledException') {
-            console.error(`[PDFViewer] Error rendering page ${pageNum}:`, err);
-            if (pageNum === 1) {
-              setError(err.message);
-            }
-          }
-          renderTaskRefs.current[pageNum] = null;
+          globalPageNum++;
         }
       }
     };
@@ -573,7 +634,7 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
       Promise.all(cancelPromises);
       renderTaskRefs.current = {};
     };
-  }, [pdfDoc, numPages, scale]);
+  }, [pdfDocs, numPages, scale, rotation]);
 
   const handleZoomIn = () => {
     setScale((prev) => {
@@ -679,10 +740,10 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
     // Find current visible page and scroll to next
     const container = containerRef.current;
     if (!container) return;
-    
+
     const scrollTop = container.scrollTop;
     let currentPage = 1;
-    
+
     // Find which page is currently most visible
     for (let i = 1; i <= numPages; i++) {
       const pageElement = pageRefs.current[i];
@@ -694,18 +755,28 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
         }
       }
     }
-    
+
     if (currentPage < numPages) {
       handleScrollToPage(currentPage + 1);
     }
   };
 
+  const handleRotate = () => {
+    setRotation((prev) => (prev + 90) % 360);
+  };
 
-  // Check if we have either fileUrl or assignmentId + submissionId
-  const hasFileUrl = !!fileUrl;
+  // Hotkey for rotation
+  useHotkeys(hotkeys.rotatePdf, (e) => {
+    e.preventDefault();
+    handleRotate();
+  }, { enableOnFormTags: false }, [hotkeys.rotatePdf]);
+
+
+  // Check if we have either fileUrls or assignmentId + submissionId
+  const hasFileUrls = fileUrls.length > 0;
   const hasIds = selectedAssignment?.id && selectedSubmission?.id;
-  
-  if (!hasFileUrl && !hasIds) {
+
+  if (!hasFileUrls && !hasIds) {
     return (
       <Paper sx={{ p: 3, textAlign: 'center', minHeight: 400, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Typography color="text.secondary">No PDF selected</Typography>
@@ -773,11 +844,6 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
 
   return (
     <Paper sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden', flex: 1, minHeight: 0 }}>
-      {/* Student Selector */}
-      <Box sx={{ p: 1, borderBottom: 1, borderColor: 'divider' }}>
-        <StudentSelector />
-      </Box>
-
       {/* Grading Progress Bar - Two-Tone (Green: Pushed, Orange: Staged) */}
       {totalCount > 0 && (
         <Box sx={{ px: 2, py: 0.5, borderBottom: 1, borderColor: 'divider', backgroundColor: 'grey.50' }}>
@@ -856,8 +922,13 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
 
         <Box sx={{ flex: 1 }} />
 
-        {/* Zoom controls */}
+        {/* Zoom and rotation controls */}
         <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 200 }}>
+          <Tooltip title="Rotate 90° clockwise (R)">
+            <IconButton size="small" onClick={handleRotate}>
+              <RotateRight />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Zoom out">
             <IconButton size="small" onClick={handleZoomOut}>
               <ZoomOut />
@@ -1054,5 +1125,29 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
   );
 };
 
-export default PDFViewer;
+// Custom comparison function for React.memo
+const arePropsEqual = (prevProps, nextProps) => {
+  // Compare fileUrls array by checking length and each URL
+  if (prevProps.fileUrls.length !== nextProps.fileUrls.length) {
+    return false;
+  }
+
+  for (let i = 0; i < prevProps.fileUrls.length; i++) {
+    if (prevProps.fileUrls[i] !== nextProps.fileUrls[i]) {
+      return false;
+    }
+  }
+
+  // Compare other props
+  return (
+    prevProps.apiToken === nextProps.apiToken &&
+    prevProps.hasNext === nextProps.hasNext &&
+    prevProps.hasPrevious === nextProps.hasPrevious &&
+    prevProps.onNext === nextProps.onNext &&
+    prevProps.onPrevious === nextProps.onPrevious
+  );
+};
+
+// Wrap with React.memo to prevent unnecessary re-renders
+export default memo(PDFViewer, arePropsEqual);
 

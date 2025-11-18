@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, memo } from 'react';
 import {
   FormControl,
   InputLabel,
@@ -165,6 +165,9 @@ const StudentSelector = () => {
               const isSelected = selectedSubmission &&
                 String(selectedSubmission.user_id || selectedSubmission.id) === submissionId;
 
+              // Check if there's an unstaged rubric score
+              const hasUnstagedRubricScore = sub.rubricScore && !sub.stagedGrade && (!sub.canvasGrade || sub.isAutoGradedZero);
+
               return (
                 <MenuItem key={submissionId} value={submissionId}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
@@ -185,6 +188,14 @@ const StudentSelector = () => {
                         label="Auto 0"
                         size="small"
                         color="warning"
+                        sx={{ height: 20, fontSize: '0.7rem' }}
+                      />
+                    )}
+                    {hasUnstagedRubricScore && (
+                      <Chip
+                        label="Rubric Score"
+                        size="small"
+                        color="info"
                         sx={{ height: 20, fontSize: '0.7rem' }}
                       />
                     )}
@@ -212,6 +223,14 @@ const StudentSelector = () => {
               const isSelected = selectedSubmission &&
                 String(selectedSubmission.user_id || selectedSubmission.id) === submissionId;
 
+              // Check if there's an unstaged rubric score
+              const hasUnstagedRubricScore = sub.rubricScore && !sub.stagedGrade && (!sub.canvasGrade || sub.isAutoGradedZero);
+
+              // Check if staged grade is overriding a different Canvas grade
+              const isOverridingCanvasGrade = sub.stagedGrade && sub.canvasGrade &&
+                !sub.isAutoGradedZero &&
+                sub.stagedGrade.grade !== sub.canvasGrade;
+
               return (
                 <MenuItem key={submissionId} value={submissionId}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%' }}>
@@ -227,11 +246,28 @@ const StudentSelector = () => {
                         sx={{ height: 20, fontSize: '0.7rem' }}
                       />
                     )}
+                    {hasUnstagedRubricScore && (
+                      <Chip
+                        label="Rubric Score"
+                        size="small"
+                        color="info"
+                        sx={{ height: 20, fontSize: '0.7rem' }}
+                      />
+                    )}
                     {sub.stagedGrade && (
                       <Chip
                         label="Staged"
                         size="small"
                         color="warning"
+                        sx={{ height: 20, fontSize: '0.7rem' }}
+                      />
+                    )}
+                    {isOverridingCanvasGrade && (
+                      <Chip
+                        label="Overriding Canvas"
+                        size="small"
+                        color="error"
+                        variant="outlined"
                         sx={{ height: 20, fontSize: '0.7rem' }}
                       />
                     )}
@@ -338,5 +374,7 @@ const StudentSelector = () => {
   );
 };
 
-export default StudentSelector;
+// Wrap with React.memo to prevent unnecessary re-renders
+// StudentSelector already uses granular Zustand selectors internally
+export default memo(StudentSelector);
 

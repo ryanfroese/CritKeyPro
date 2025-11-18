@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { useHotkeys } from 'react-hotkeys-hook';
 import {
   CssBaseline,
@@ -20,6 +20,7 @@ import SideDrawer from './components/SideDrawer';
 import RubricDisplay from './components/RubricDisplay';
 import FeedbackGenerator from './components/FeedbackGenerator';
 import PDFViewer from './components/PDFViewer';
+import StudentSelector from './components/StudentSelector';
 import DockableRubricWindow from './components/DockableRubricWindow';
 import DockedRubricPanel from './components/DockedRubricPanel';
 import TotalPoints from './components/TotalPoints';
@@ -102,44 +103,44 @@ function App() {
     initializeCanvas();
   }, [initialize, initializeCanvas]);
 
-  // Get PDF URL from submission
-  // Check attachments array first, then fall back to submission_history if needed
-  const getPdfUrl = (submission) => {
-    if (!submission) return null;
-    
+  // Memoized PDF URLs extraction to prevent unnecessary re-renders
+  const pdfUrls = useMemo(() => {
+    if (!selectedSubmission) return [];
+
+    const urls = [];
+
     // Try attachments array first
-    if (submission.attachments && submission.attachments.length > 0) {
-      const pdfAttachment = submission.attachments.find(att => 
-        att.content_type?.includes('pdf') || 
+    if (selectedSubmission.attachments && selectedSubmission.attachments.length > 0) {
+      const pdfAttachments = selectedSubmission.attachments.filter(att =>
+        att.content_type?.includes('pdf') ||
         att.filename?.toLowerCase().endsWith('.pdf') ||
         att.url
-      ) || submission.attachments[0];
-      return pdfAttachment?.url || null;
+      );
+      urls.push(...pdfAttachments.map(att => att.url).filter(Boolean));
     }
-    
-    // Fall back to submission_history if attachments not in main object
-    if (submission.submission_history && submission.submission_history.length > 0) {
-      for (const historyItem of submission.submission_history) {
+
+    // Fall back to submission_history if no attachments found in main object
+    if (urls.length === 0 && selectedSubmission.submission_history && selectedSubmission.submission_history.length > 0) {
+      for (const historyItem of selectedSubmission.submission_history) {
         if (historyItem.attachments && historyItem.attachments.length > 0) {
-          const pdfAttachment = historyItem.attachments.find(att => 
-            att.content_type?.includes('pdf') || 
+          const pdfAttachments = historyItem.attachments.filter(att =>
+            att.content_type?.includes('pdf') ||
             att.filename?.toLowerCase().endsWith('.pdf') ||
             att.url
-          ) || historyItem.attachments[0];
-          if (pdfAttachment?.url) {
-            return pdfAttachment.url;
+          );
+          urls.push(...pdfAttachments.map(att => att.url).filter(Boolean));
+          if (urls.length > 0) {
+            break; // Found PDFs in this history item, stop searching
           }
         }
       }
     }
-    
-    return null;
-  };
-  
-  const pdfUrl = getPdfUrl(selectedSubmission);
 
-  // Get current criterion info for mini view
-  const getCriterionInfo = () => {
+    return urls;
+  }, [selectedSubmission]);
+
+  // Memoized criterion info to prevent unnecessary re-renders
+  const criterionInfo = useMemo(() => {
     if (!currentRubric || !currentRubric.criteria) return null;
 
     const criterion = currentRubric.criteria[currentCriterionIndex];
@@ -166,9 +167,7 @@ function App() {
       totalEarned: totalPoints.earned,
       totalPossible: totalPoints.possible,
     };
-  };
-
-  const criterionInfo = getCriterionInfo();
+  }, [currentRubric, currentCriterionIndex, getTotalPoints]);
 
   const hotkeys = useHotkeyConfig();
 
@@ -321,10 +320,15 @@ function App() {
               flexDirection: 'column',
             }}
           >
-            {/* Show PDFViewer if we have pdfUrl OR if we have a selected submission and assignment (for cache-only loading) */}
-            {pdfUrl || (selectedSubmission && selectedAssignment) ? (
+            {/* Student Selector - moved here from PDFViewer */}
+            <Box sx={{ flexShrink: 0, borderBottom: 1, borderColor: 'divider' }}>
+              <StudentSelector />
+            </Box>
+
+            {/* Show PDFViewer if we have pdfUrls OR if we have a selected submission and assignment (for cache-only loading) */}
+            {pdfUrls.length > 0 || (selectedSubmission && selectedAssignment) ? (
               <PDFViewer
-                fileUrl={pdfUrl}
+                fileUrls={pdfUrls}
                 apiToken={apiToken}
                 onNext={nextSubmission}
                 onPrevious={previousSubmission}

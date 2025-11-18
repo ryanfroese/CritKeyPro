@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { 
-  saveRubric as saveRubricToStorage, 
+import {
+  saveRubric as saveRubricToStorage,
   deleteRubric as deleteRubricFromStorage,
   getRubricsByCourse,
   getAllCourses,
@@ -11,6 +11,20 @@ import {
   getRubricState,
 } from '../utils/localStorage';
 import { calculateTotalPoints } from '../utils/csvParser';
+
+// Debounce utility for saveSession
+let saveSessionTimeout = null;
+const debounceSaveSession = (fn, delay = 500) => {
+  return (...args) => {
+    if (saveSessionTimeout) {
+      clearTimeout(saveSessionTimeout);
+    }
+    saveSessionTimeout = setTimeout(() => {
+      fn(...args);
+      saveSessionTimeout = null;
+    }, delay);
+  };
+};
 
 const selectMaxLevels = (rubric) => {
   if (!rubric) return rubric;
@@ -296,23 +310,33 @@ const useRubricStore = create((set, get) => ({
 
   // Grading actions
   selectLevel: (criterionIndex, levelIndex) => {
-    const { currentRubric } = get();
+    const { currentRubric, saveSessionDebounced } = get();
     if (!currentRubric) return;
 
     const updatedRubric = { ...currentRubric };
     updatedRubric.criteria[criterionIndex].selectedLevel = levelIndex;
     set({ currentRubric: updatedRubric });
-    get().saveSession();
+    // Use debounced save for frequent updates
+    if (saveSessionDebounced) {
+      saveSessionDebounced();
+    } else {
+      get().saveSession();
+    }
   },
 
   updateComment: (criterionIndex, comment) => {
-    const { currentRubric } = get();
+    const { currentRubric, saveSessionDebounced } = get();
     if (!currentRubric) return;
 
     const updatedRubric = { ...currentRubric };
     updatedRubric.criteria[criterionIndex].comment = comment;
     set({ currentRubric: updatedRubric });
-    get().saveSession();
+    // Use debounced save to avoid saving on every keystroke
+    if (saveSessionDebounced) {
+      saveSessionDebounced();
+    } else {
+      get().saveSession();
+    }
   },
 
   addLevel: (criterionIndex, levelData) => {
@@ -515,6 +539,17 @@ const useRubricStore = create((set, get) => ({
     }
   },
 
+  // Navigation with auto-advance check (used by space bar hotkey)
+  goToNextCriterionIfNotAutoAdvance: () => {
+    const { autoAdvance, currentRubric, currentCriterionIndex } = get();
+    if (!autoAdvance && currentRubric) {
+      if (currentCriterionIndex < currentRubric.criteria.length - 1) {
+        set({ currentCriterionIndex: currentCriterionIndex + 1 });
+        get().saveSession();
+      }
+    }
+  },
+
   goToCriterion: (index) => {
     const { currentRubric } = get();
     if (!currentRubric) return;
@@ -549,6 +584,9 @@ const useRubricStore = create((set, get) => ({
       correctByDefault,
     });
   },
+
+  // Debounced version of saveSession for frequent updates like typing
+  saveSessionDebounced: null, // Will be initialized below
 
   resetGrading: () => {
     const { currentRubric, correctByDefault, applyCorrectByDefault } = get();
@@ -690,6 +728,11 @@ const useRubricStore = create((set, get) => ({
     saveRubricState(assignmentId, submissionId, rubricState);
   },
 }));
+
+// Initialize debounced saveSession after store creation
+useRubricStore.getState().saveSessionDebounced = debounceSaveSession(
+  () => useRubricStore.getState().saveSession()
+);
 
 export default useRubricStore;
 

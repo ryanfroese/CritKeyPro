@@ -742,10 +742,8 @@ const RubricDisplay = () => {
                         <Typography
                           variant="body2"
                           sx={{
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
                             flex: 1,
+                            wordBreak: 'break-word',
                           }}
                         >
                           {renderTextWithLatex(

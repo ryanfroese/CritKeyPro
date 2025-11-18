@@ -35,6 +35,9 @@ export const DEFAULT_HOTKEYS = {
   resetRubric: 'ctrl+r, meta+r',
   stageGrade: 's',
 
+  // PDF controls
+  rotatePdf: 'r',
+
   // Help
   showShortcuts: '?',
 };
@@ -153,6 +156,7 @@ export const getHotkeyDescriptions = () => {
     generateFeedback: 'Generate feedback and copy to clipboard',
     resetRubric: 'Reset all rubric selections',
     stageGrade: 'Stage grade and feedback for Canvas submission',
+    rotatePdf: 'Rotate PDF pages clockwise 90 degrees',
     showShortcuts: 'Show keyboard shortcuts help',
   };
 };

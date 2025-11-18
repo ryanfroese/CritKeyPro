@@ -12,6 +12,7 @@ import {
   InputAdornment,
   Switch,
   FormControlLabel,
+  LinearProgress,
 } from '@mui/material';
 import {
   ZoomIn,
@@ -33,7 +34,7 @@ import StudentSelector from './StudentSelector';
 GlobalWorkerOptions.workerSrc = pdfWorkerSrc;
 
 const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious }) => {
-  const { offlineMode, cachingProgress, selectedSubmission, selectedAssignment } = useCanvasStore();
+  const { offlineMode, cachingProgress, selectedSubmission, selectedAssignment, allSubmissions } = useCanvasStore();
   const [pdfDoc, setPdfDoc] = useState(null);
   const [numPages, setNumPages] = useState(0);
   const [scale, setScale] = useState(1.0);
@@ -751,13 +752,46 @@ const PDFViewer = ({ fileUrl, apiToken, onNext, onPrevious, hasNext, hasPrevious
     );
   }
 
+  // Calculate grading progress
+  const gradedCount = allSubmissions.filter(sub => sub.isGraded && !sub.isAutoGradedZero).length;
+  const totalCount = allSubmissions.length;
+  const progressPercent = totalCount > 0 ? (gradedCount / totalCount) * 100 : 0;
+
   return (
     <Paper sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', overflow: 'hidden', flex: 1, minHeight: 0 }}>
       {/* Student Selector */}
       <Box sx={{ p: 1, borderBottom: 1, borderColor: 'divider' }}>
         <StudentSelector />
       </Box>
-      
+
+      {/* Grading Progress Bar */}
+      {totalCount > 0 && (
+        <Box sx={{ px: 2, py: 0.5, borderBottom: 1, borderColor: 'divider', backgroundColor: 'grey.50' }}>
+          <Stack direction="row" spacing={1.5} alignItems="center">
+            <Typography variant="caption" color="text.secondary" sx={{ minWidth: 70 }}>
+              {gradedCount}/{totalCount} graded
+            </Typography>
+            <LinearProgress
+              variant="determinate"
+              value={progressPercent}
+              sx={{
+                flex: 1,
+                height: 6,
+                borderRadius: 1,
+                backgroundColor: 'grey.300',
+                '& .MuiLinearProgress-bar': {
+                  backgroundColor: progressPercent === 100 ? 'success.main' : 'primary.main',
+                  borderRadius: 1,
+                },
+              }}
+            />
+            <Typography variant="caption" color="text.secondary" sx={{ minWidth: 35, textAlign: 'right' }}>
+              {Math.round(progressPercent)}%
+            </Typography>
+          </Stack>
+        </Box>
+      )}
+
       {/* Controls */}
       <Box sx={{ p: 1, borderBottom: 1, borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
         {/* Navigation */}

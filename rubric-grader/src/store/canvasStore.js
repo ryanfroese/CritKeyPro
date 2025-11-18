@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import pLimit from 'p-limit';
+import pRetry from 'p-retry';
 import {
   cachePdf,
   getCachedPdf,
@@ -196,7 +198,7 @@ const useCanvasStore = create((set, get) => ({
     set({ parallelDownloadLimit: limitValue });
   },
 
-  // Cache all PDFs for current assignment (parallel downloads, 3 at a time)
+  // Cache all PDFs for current assignment (optimized parallel downloads with retry logic)
   cacheAllPdfs: async (requestId) => {
     const { allSubmissions, selectedAssignment, apiToken, currentAssignmentRequestId } = get();
     if (!allSubmissions.length || !selectedAssignment) {
@@ -218,23 +220,23 @@ const useCanvasStore = create((set, get) => ({
       for (const sub of allSubmissions) {
         // Use the same URL extraction logic as App.jsx
         let pdfUrl = null;
-        
+
         // Try attachments array first
         if (sub.attachments && sub.attachments.length > 0) {
-          const pdfAttachment = sub.attachments.find(att => 
-            att.content_type?.includes('pdf') || 
+          const pdfAttachment = sub.attachments.find(att =>
+            att.content_type?.includes('pdf') ||
             att.filename?.toLowerCase().endsWith('.pdf') ||
             att.url
           ) || sub.attachments[0];
           pdfUrl = pdfAttachment?.url || null;
         }
-        
+
         // Fall back to submission_history if attachments not in main object
         if (!pdfUrl && sub.submission_history && sub.submission_history.length > 0) {
           for (const historyItem of sub.submission_history) {
             if (historyItem.attachments && historyItem.attachments.length > 0) {
-              const pdfAttachment = historyItem.attachments.find(att => 
-                att.content_type?.includes('pdf') || 
+              const pdfAttachment = historyItem.attachments.find(att =>
+                att.content_type?.includes('pdf') ||
                 att.filename?.toLowerCase().endsWith('.pdf') ||
                 att.url
               ) || historyItem.attachments[0];
@@ -245,7 +247,7 @@ const useCanvasStore = create((set, get) => ({
             }
           }
         }
-        
+
         if (!pdfUrl) continue;
 
         // Check if already cached by assignmentId + submissionId (more reliable than URL)
@@ -271,15 +273,28 @@ const useCanvasStore = create((set, get) => ({
         return;
       }
 
-      // Download in parallel batches
+      // Optimized parallel downloads with p-limit and retry logic
       const { parallelDownloadLimit } = get();
-      const batchSize = parallelDownloadLimit === 0 ? pdfsToCache.length : parallelDownloadLimit;
+      // When rate limit is 0 (unlimited), use 20 concurrent downloads for optimal browser performance
+      // Otherwise use the configured limit
+      const concurrency = parallelDownloadLimit === 0 ? 20 : parallelDownloadLimit;
+      const limit = pLimit(concurrency);
 
-      if (batchSize >= pdfsToCache.length) {
-        // Download all at once if no limit or limit >= total
-        await Promise.all(
-          pdfsToCache.map(async ({ url, submission }) => {
-            try {
+      debugLog(`[cacheAllPdfs] Starting download with concurrency: ${concurrency} (limit: ${parallelDownloadLimit})`);
+
+      // Define download function with retry logic
+      const downloadPdf = async ({ url, submission }) => {
+        const submissionId = submission.id || submission.user_id;
+
+        try {
+          // Use p-retry to automatically retry failed downloads
+          await pRetry(
+            async () => {
+              // Check if request is still current before each attempt
+              if (get().currentAssignmentRequestId !== requestId) {
+                throw new pRetry.AbortError('Request cancelled');
+              }
+
               const proxyUrl = `${API_BASE}/api/proxy-file?url=${encodeURIComponent(url)}`;
               const response = await fetch(proxyUrl, {
                 headers: {
@@ -287,90 +302,73 @@ const useCanvasStore = create((set, get) => ({
                   'Content-Type': 'application/json'
                 }
               });
+
               if (!response.ok) {
-                console.warn(`Failed to fetch PDF: ${response.status}`);
-                return;
+                // Distinguish between retryable and non-retryable errors
+                if (response.status === 404) {
+                  // Don't retry 404s - file doesn't exist
+                  throw new pRetry.AbortError(`PDF not found (404): ${url}`);
+                }
+                if (response.status >= 400 && response.status < 500) {
+                  // Don't retry other 4xx errors (client errors)
+                  throw new pRetry.AbortError(`Client error (${response.status}): ${url}`);
+                }
+                // Retry 5xx (server errors) and network errors
+                throw new Error(`Server error (${response.status})`);
               }
 
               const blob = await response.blob();
-              await cachePdf(url, blob, selectedAssignment.id, submission.id || submission.user_id, selectedAssignment.name);
-              
 
-              // Update progress
-              set((state) => ({
-                cachingProgress: {
-                  current: state.cachingProgress.current + 1,
-                  total: state.cachingProgress.total,
-                  isCaching: true,
-                },
-              }));
-            } catch (err) {
-              console.warn(`Failed to cache PDF:`, err);
-              // Still update progress even on error
-              set((state) => ({
-                cachingProgress: {
-                  current: state.cachingProgress.current + 1,
-                  total: state.cachingProgress.total,
-                  isCaching: true,
-                },
-              }));
-            }
-          })
-        );
-      } else {
-        // Download in batches
-        for (let i = 0; i < pdfsToCache.length; i += batchSize) {
-          // Check if request is still current before each batch
-          if (get().currentAssignmentRequestId !== requestId) {
-            debugLog('[cacheAllPdfs] Request cancelled during batch download');
-            set({ cachingProgress: { current: 0, total: 0, isCaching: false } });
-            return;
-          }
-
-          const batch = pdfsToCache.slice(i, i + batchSize);
-
-          await Promise.all(
-            batch.map(async ({ url, submission }) => {
-              try {
-                const proxyUrl = `${API_BASE}/api/proxy-file?url=${encodeURIComponent(url)}`;
-                const response = await fetch(proxyUrl, {
-                  headers: {
-                    'Authorization': `Bearer ${apiToken}`,
-                    'Content-Type': 'application/json'
-                  }
-                });
-                if (!response.ok) {
-                  console.warn(`Failed to fetch PDF: ${response.status}`);
-                  return;
-                }
-
-                const blob = await response.blob();
-                await cachePdf(url, blob, selectedAssignment.id, submission.id || submission.user_id, selectedAssignment.name);
-                
-
-                // Update progress
-                set((state) => ({
-                  cachingProgress: {
-                    current: state.cachingProgress.current + 1,
-                    total: state.cachingProgress.total,
-                    isCaching: true,
-                  },
-                }));
-              } catch (err) {
-                console.warn(`Failed to cache PDF:`, err);
-                // Still update progress even on error
-                set((state) => ({
-                  cachingProgress: {
-                    current: state.cachingProgress.current + 1,
-                    total: state.cachingProgress.total,
-                    isCaching: true,
-                  },
-                }));
+              // Validate blob has content
+              if (blob.size === 0) {
+                throw new Error('Downloaded PDF is empty');
               }
-            })
+
+              await cachePdf(url, blob, selectedAssignment.id, submissionId, selectedAssignment.name);
+
+              debugLog(`[cacheAllPdfs] Successfully cached PDF for submission ${submissionId}`);
+            },
+            {
+              retries: 3,
+              minTimeout: 1000,    // Start with 1 second
+              maxTimeout: 10000,   // Max 10 seconds between retries
+              factor: 2,           // Exponential backoff: 1s, 2s, 4s
+              onFailedAttempt: (error) => {
+                if (error.retriesLeft > 0) {
+                  debugLog(`[cacheAllPdfs] Retry ${3 - error.retriesLeft}/3 for submission ${submissionId}: ${error.message}`);
+                }
+              }
+            }
           );
+
+          // Success - update progress
+          set((state) => ({
+            cachingProgress: {
+              current: state.cachingProgress.current + 1,
+              total: state.cachingProgress.total,
+              isCaching: true,
+            },
+          }));
+        } catch (err) {
+          // Failed after all retries or aborted
+          if (err.message !== 'Request cancelled') {
+            console.warn(`[cacheAllPdfs] Failed to cache PDF for submission ${submissionId} after retries:`, err.message);
+          }
+          // Still update progress even on error
+          set((state) => ({
+            cachingProgress: {
+              current: state.cachingProgress.current + 1,
+              total: state.cachingProgress.total,
+              isCaching: true,
+            },
+          }));
         }
-      }
+      };
+
+      // Execute all downloads with concurrency control
+      await Promise.all(
+        pdfsToCache.map(pdf => limit(() => downloadPdf(pdf)))
+      );
 
       // Check again before updating cached assignments
       if (get().currentAssignmentRequestId !== requestId) {

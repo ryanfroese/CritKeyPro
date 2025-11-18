@@ -18,6 +18,8 @@
     "crypto-js": "^4.2.0",
     "jszip": "^3.10.1",
     "katex": "^0.16.9",
+    "p-limit": "^7.2.0",
+    "p-retry": "^7.1.0",
     "papaparse": "^5.5.3",
     "pdfjs-dist": "^4.0.379",
     "react": "^19.1.1",

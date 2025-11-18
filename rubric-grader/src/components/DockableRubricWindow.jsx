@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Paper, Box, IconButton, Stack, Typography } from '@mui/material';
-import { DragIndicator, Minimize, Close } from '@mui/icons-material';
+import { DragIndicator, Minimize, Close, Launch as LaunchIcon } from '@mui/icons-material';
 import { getRubricWindowState, saveRubricWindowState } from '../utils/localStorage';
 
 const DOCK_THRESHOLD = 50; // pixels from edge to trigger docking
@@ -112,16 +112,42 @@ const DockableRubricWindow = ({ title, children, onClose, onDockChange, pdfViewe
     }
   }, [docked, onDockChange]);
 
-  // Handle window resize - check if rubric is now off-screen
+  // Handle window resize - check if rubric is now off-screen or at edge
   useEffect(() => {
     const handleResize = () => {
       if (docked) return; // Don't adjust if docked
 
+      const screenWidth = window.innerWidth;
+      const screenHeight = window.innerHeight;
+
+      // Check if window is at or past the right edge
+      const isAtRightEdge = position.x + size.width >= screenWidth - 10;
+      const isAtLeftEdge = position.x <= 10;
+      const isAtTopEdge = position.y <= HEADER_HEIGHT + 10;
+      const isAtBottomEdge = position.y + size.height >= screenHeight - FOOTER_HEIGHT - 10;
+
+      // Auto-dock if window is pushed to any edge during resize
+      if (isAtRightEdge || isAtLeftEdge || isAtTopEdge || isAtBottomEdge) {
+        console.log('[Rubric Window] Window at edge after resize, auto-docking');
+        // Dock to the edge it's closest to
+        if (isAtRightEdge) {
+          setDocked('right');
+        } else if (isAtLeftEdge) {
+          setDocked('left');
+        } else if (isAtTopEdge) {
+          setDocked('top');
+        } else {
+          setDocked('right'); // Default to right if at bottom
+        }
+        return;
+      }
+
+      // Check if completely off-screen
       const validatedPosition = validatePosition(
         position,
         size,
-        window.innerWidth,
-        window.innerHeight
+        screenWidth,
+        screenHeight
       );
 
       // If window is off-screen after resize, auto-dock to right
@@ -367,10 +393,33 @@ const DockableRubricWindow = ({ title, children, onClose, onDockChange, pdfViewe
           <Stack direction="row" spacing={0.5} className="no-drag">
             <IconButton
               size="small"
-              onClick={() => setIsMinimized(!isMinimized)}
+              onClick={() => {
+                const newMinimized = !isMinimized;
+                setIsMinimized(newMinimized);
+                // Auto-undock when minimizing to free up PDF space
+                if (newMinimized && docked) {
+                  setDocked(null);
+                }
+              }}
               sx={{ color: 'inherit' }}
+              title={isMinimized ? 'Expand' : 'Collapse'}
             >
               <Minimize />
+            </IconButton>
+            <IconButton
+              size="small"
+              onClick={() => {
+                // Auto-expand when docking
+                if (isMinimized) {
+                  setIsMinimized(false);
+                }
+                // Dock to right by default
+                setDocked('right');
+              }}
+              sx={{ color: 'inherit' }}
+              title="Dock to Side"
+            >
+              <LaunchIcon />
             </IconButton>
             {onClose && (
               <IconButton
@@ -385,21 +434,20 @@ const DockableRubricWindow = ({ title, children, onClose, onDockChange, pdfViewe
         </Stack>
       </Box>
 
-      {/* Content */}
-      {!isMinimized && (
-        <Box
-          className="no-drag"
-          sx={{
-            p: 2,
-            overflow: 'auto',
-            flex: 1,
-            minHeight: 0,
-            maxHeight: '100%',
-          }}
-        >
-          {children}
-        </Box>
-      )}
+      {/* Content - keep mounted but hidden to preserve state */}
+      <Box
+        className="no-drag"
+        sx={{
+          p: 2,
+          overflow: 'auto',
+          flex: 1,
+          minHeight: 0,
+          maxHeight: '100%',
+          display: isMinimized ? 'none' : 'block',
+        }}
+      >
+        {children}
+      </Box>
 
       {/* Resize Handles */}
       {!isMinimized && (

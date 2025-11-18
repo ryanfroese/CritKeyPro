@@ -127,7 +127,14 @@ const DockedRubricPanel = ({
         <Stack direction="row" spacing={0.5}>
           <IconButton
             size="small"
-            onClick={() => setIsMinimized(!isMinimized)}
+            onClick={() => {
+              const newMinimized = !isMinimized;
+              setIsMinimized(newMinimized);
+              // Auto-undock when minimizing to free up PDF space
+              if (newMinimized && onUndock) {
+                onUndock();
+              }
+            }}
             sx={{ color: 'inherit' }}
             title={isMinimized ? 'Expand' : 'Collapse'}
           >
@@ -149,20 +156,19 @@ const DockedRubricPanel = ({
         </Stack>
       </Box>
 
-      {/* Content */}
-      {!isMinimized && (
-        <Box
-          sx={{
-            p: 2,
-            overflow: 'auto',
-            flex: 1,
-            minHeight: 0,
-            maxHeight: '100%',
-          }}
-        >
-          {children}
-        </Box>
-      )}
+      {/* Content - keep mounted but hidden to preserve state */}
+      <Box
+        sx={{
+          p: 2,
+          overflow: 'auto',
+          flex: 1,
+          minHeight: 0,
+          maxHeight: '100%',
+          display: isMinimized ? 'none' : 'block',
+        }}
+      >
+        {children}
+      </Box>
 
       {/* Resize Handles */}
       {(docked === 'left' || docked === 'right') && (

@@ -69,6 +69,11 @@ export const convertCanvasRubricToInternal = (canvasRubric) => {
     // Sort levels by points descending (highest first) - CritKey convention
     levels.sort((a, b) => b.points - a.points);
 
+    // Set default totalPoints to highest level points
+    const defaultTotalPoints = levels.length > 0 
+      ? Math.max(...levels.map(l => Number(l.points) || 0))
+      : 0;
+
     return {
       name: criterion.description || '',
       description: criterion.long_description || '',
@@ -76,6 +81,7 @@ export const convertCanvasRubricToInternal = (canvasRubric) => {
       levels: levels,
       selectedLevel: null, // No selection by default
       comment: '', // Empty comment field
+      totalPoints: defaultTotalPoints, // Default to highest level points
     };
   });
 

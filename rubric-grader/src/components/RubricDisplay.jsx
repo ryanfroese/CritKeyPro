@@ -16,6 +16,8 @@ import {
   DialogActions,
   Alert,
   Collapse,
+  Checkbox,
+  FormControlLabel,
 } from '@mui/material';
 import {
   NavigateBefore,
@@ -36,13 +38,20 @@ import { useHotkeyConfig } from '../hooks/useHotkeyConfig';
 
 const calculatePossiblePoints = (criteria = []) =>
   criteria.reduce((sum, criterion) => {
-    if (!criterion?.levels?.length) return sum;
-    const maxPoints = Math.max(
-      ...criterion.levels.map((level) =>
-        Number(level?.points) || 0
-      )
-    );
-    return Number.isFinite(maxPoints) ? sum + maxPoints : sum;
+    // Use criterion.totalPoints if useCustomTotalPoints is true, otherwise use max level points
+    let criterionTotalPoints;
+    if (criterion.useCustomTotalPoints === true && criterion.totalPoints !== undefined && criterion.totalPoints !== null) {
+      criterionTotalPoints = Number(criterion.totalPoints);
+    } else if (criterion?.levels?.length > 0) {
+      criterionTotalPoints = Math.max(
+        ...criterion.levels.map((level) =>
+          Number(level?.points) || 0
+        )
+      );
+    } else {
+      criterionTotalPoints = 0;
+    }
+    return Number.isFinite(criterionTotalPoints) ? sum + criterionTotalPoints : sum;
   }, 0);
 
 const cloneLevels = (levels = []) =>
@@ -285,6 +294,8 @@ const RubricDisplay = () => {
         levels: [],
         selectedLevel: null,
         comment: '',
+        totalPoints: null,
+        useCustomTotalPoints: false,
       },
     ]);
   };
@@ -299,6 +310,8 @@ const RubricDisplay = () => {
         levels: [],
         selectedLevel: null,
         comment: '',
+        totalPoints: null,
+        useCustomTotalPoints: false,
       });
       return updated;
     });
@@ -407,6 +420,19 @@ const RubricDisplay = () => {
       const updated = cloneCriteria(prev);
       if (!updated[index]) return prev;
       const newLevels = sanitizeLevels(editingLevels[index] || []);
+      // Only update totalPoints if useCustomTotalPoints is true AND totalPoints is not already set
+      // If user has explicitly set a value, preserve it
+      if (updated[index].useCustomTotalPoints === true) {
+        // Only auto-update if totalPoints is not already set (null or undefined)
+        if (updated[index].totalPoints === null || updated[index].totalPoints === undefined) {
+          // Not set yet, initialize with max level points
+          const totalPoints = newLevels.length > 0 
+            ? Math.max(...newLevels.map(l => Number(l.points) || 0))
+            : 0;
+          updated[index].totalPoints = totalPoints;
+        }
+        // If totalPoints is already set, preserve the user's custom value - don't auto-update
+      }
       updated[index] = {
         ...updated[index],
         levels: newLevels,
@@ -1087,6 +1113,65 @@ const RubricDisplay = () => {
                         sx={{ mt: 0.2 }}
                         fullWidth
                       />
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.2 }}>
+                        <FormControlLabel
+                          control={
+                            <Checkbox
+                              checked={crit.useCustomTotalPoints === true}
+                              onChange={(e) => {
+                                setDraftCriteria((prev) => {
+                                  const updated = cloneCriteria(prev);
+                                  if (!updated[index]) return prev;
+                                  updated[index].useCustomTotalPoints = e.target.checked;
+                                  // If unchecking, set totalPoints to null to use max points
+                                  if (!e.target.checked) {
+                                    updated[index].totalPoints = null;
+                                  } else {
+                                    // If checking, initialize with max points if not set
+                                    if (updated[index].totalPoints === null || updated[index].totalPoints === undefined) {
+                                      const maxPoints = updated[index].levels?.length > 0 
+                                        ? Math.max(...updated[index].levels.map(l => Number(l.points) || 0))
+                                        : 0;
+                                      updated[index].totalPoints = maxPoints;
+                                    }
+                                  }
+                                  return updated;
+                                });
+                              }}
+                              size="small"
+                            />
+                          }
+                          label="Set points"
+                          sx={{ mr: 0 }}
+                        />
+                        <TextField
+                          label="Total Points for This Criterion"
+                          type="number"
+                          value={crit.useCustomTotalPoints && crit.totalPoints !== undefined && crit.totalPoints !== null 
+                            ? crit.totalPoints 
+                            : (crit.levels?.length > 0 ? Math.max(...crit.levels.map(l => Number(l.points) || 0)) : 0)}
+                          onChange={(e) => {
+                            const value = e.target.value === '' ? 0 : Number(e.target.value);
+                            setDraftCriteria((prev) => {
+                              const updated = cloneCriteria(prev);
+                              if (!updated[index]) return prev;
+                              updated[index].totalPoints = value;
+                              updated[index].useCustomTotalPoints = true; // Auto-check when user edits
+                              return updated;
+                            });
+                          }}
+                          size="small"
+                          inputProps={{ 
+                            min: 0, 
+                            step: 0.01,
+                          }}
+                          helperText={crit.useCustomTotalPoints 
+                            ? "Set to 0 for extra credit (points awarded but not counted in total)"
+                            : "Using max points from levels"}
+                          disabled={!crit.useCustomTotalPoints}
+                          sx={{ flex: 1 }}
+                        />
+                      </Stack>
                       <Box>
                         <Button
                           variant="text"

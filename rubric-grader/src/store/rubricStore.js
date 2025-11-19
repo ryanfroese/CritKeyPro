@@ -30,6 +30,21 @@ const selectMaxLevels = (rubric) => {
   if (!rubric) return rubric;
 
   const updatedCriteria = (rubric.criteria || []).map((criterion) => {
+    // Only apply correct by default to criteria with totalPoints > 0 (when using custom total points)
+    // or criteria that would have totalPoints > 0 (when using max points)
+    let totalPoints;
+    if (criterion.useCustomTotalPoints === true && criterion.totalPoints !== undefined && criterion.totalPoints !== null) {
+      totalPoints = Number(criterion.totalPoints);
+    } else if (criterion?.levels?.length > 0) {
+      totalPoints = Math.max(...criterion.levels.map(l => Number(l.points) || 0));
+    } else {
+      totalPoints = 0;
+    }
+    if (totalPoints <= 0) {
+      // Skip criteria with totalPoints <= 0 (extra credit criteria)
+      return criterion;
+    }
+
     if (!criterion?.levels?.length) {
       return {
         ...criterion,
@@ -187,6 +202,7 @@ const useRubricStore = create((set, get) => ({
           ],
           selectedLevel: null,
           comment: '',
+          totalPoints: 0, // Default to 0, will be updated when levels are added
         },
       ],
       createdAt: new Date().toISOString(),
@@ -339,6 +355,31 @@ const useRubricStore = create((set, get) => ({
     }
   },
 
+  updateCriterionTotalPoints: (criterionIndex, totalPoints) => {
+    const { currentRubric, saveSessionDebounced } = get();
+    if (!currentRubric) return;
+
+    const updatedRubric = { ...currentRubric };
+    const updatedCriteria = [...updatedRubric.criteria];
+    const criterion = updatedCriteria[criterionIndex];
+    if (!criterion) return;
+
+    updatedCriteria[criterionIndex] = {
+      ...criterion,
+      totalPoints: Number(totalPoints) || 0,
+    };
+
+    updatedRubric.criteria = updatedCriteria;
+    set({ currentRubric: updatedRubric });
+    // Use debounced save to avoid saving on every keystroke
+    if (saveSessionDebounced) {
+      saveSessionDebounced();
+    } else {
+      get().saveSession();
+    }
+    get().persistCurrentRubric();
+  },
+
   addLevel: (criterionIndex, levelData) => {
     const { currentRubric } = get();
     if (!currentRubric) return;
@@ -363,6 +404,27 @@ const useRubricStore = create((set, get) => ({
     levels.push(newLevel);
     levels.sort((a, b) => b.points - a.points);
 
+    // Only update totalPoints if useCustomTotalPoints is true AND totalPoints is not already set
+    // If false, it will automatically use max points, so don't set totalPoints
+    // If true and totalPoints is already set, preserve the user's custom value
+    let totalPoints = criterion.totalPoints;
+    if (criterion.useCustomTotalPoints === true) {
+      // Only auto-update if totalPoints is not already set (null or undefined)
+      // If user has explicitly set a value, preserve it
+      if (criterion.totalPoints === null || criterion.totalPoints === undefined) {
+        // Not set yet, initialize with max level points
+        totalPoints = levels.length > 0 
+          ? Math.max(...levels.map(l => Number(l.points) || 0))
+          : 0;
+      } else {
+        // User has explicitly set a value - preserve it, don't auto-update
+        totalPoints = Number(criterion.totalPoints);
+      }
+    } else {
+      // Not using custom total points, keep it as null
+      totalPoints = null;
+    }
+
     const nextSelectedLevel =
       selectedLevelRef && levels.includes(selectedLevelRef)
         ? levels.indexOf(selectedLevelRef)
@@ -374,6 +436,11 @@ const useRubricStore = create((set, get) => ({
       ...criterion,
       levels,
       selectedLevel: nextSelectedLevel,
+      totalPoints: totalPoints,
+      // Preserve useCustomTotalPoints - don't change it
+      useCustomTotalPoints: criterion.useCustomTotalPoints !== undefined 
+        ? criterion.useCustomTotalPoints 
+        : false,
     };
 
     updatedRubric.criteria = updatedCriteria;
@@ -413,6 +480,27 @@ const useRubricStore = create((set, get) => ({
     const editedLevelRef = levels[levelIndex];
     levels.sort((a, b) => b.points - a.points);
 
+    // Only update totalPoints if useCustomTotalPoints is true AND totalPoints is not already set
+    // If false, it will automatically use max points, so don't set totalPoints
+    // If true and totalPoints is already set, preserve the user's custom value
+    let totalPoints = criterion.totalPoints;
+    if (criterion.useCustomTotalPoints === true) {
+      // Only auto-update if totalPoints is not already set (null or undefined)
+      // If user has explicitly set a value, preserve it
+      if (criterion.totalPoints === null || criterion.totalPoints === undefined) {
+        // Not set yet, initialize with max level points
+        totalPoints = levels.length > 0 
+          ? Math.max(...levels.map(l => Number(l.points) || 0))
+          : 0;
+      } else {
+        // User has explicitly set a value - preserve it, don't auto-update
+        totalPoints = Number(criterion.totalPoints);
+      }
+    } else {
+      // Not using custom total points, keep it as null
+      totalPoints = null;
+    }
+
     let nextSelectedLevel = null;
     if (selectedLevelRef && levels.includes(selectedLevelRef)) {
       nextSelectedLevel = levels.indexOf(selectedLevelRef);
@@ -422,6 +510,11 @@ const useRubricStore = create((set, get) => ({
       ...criterion,
       levels,
       selectedLevel: nextSelectedLevel,
+      totalPoints: totalPoints,
+      // Preserve useCustomTotalPoints - don't change it
+      useCustomTotalPoints: criterion.useCustomTotalPoints !== undefined 
+        ? criterion.useCustomTotalPoints 
+        : false,
     };
 
     updatedRubric.criteria = updatedCriteria;
@@ -461,10 +554,36 @@ const useRubricStore = create((set, get) => ({
       }
     }
 
+    // Only update totalPoints if useCustomTotalPoints is true AND totalPoints is not already set
+    // If false, it will automatically use max points, so don't set totalPoints
+    // If true and totalPoints is already set, preserve the user's custom value
+    let totalPoints = criterion.totalPoints;
+    if (criterion.useCustomTotalPoints === true) {
+      // Only auto-update if totalPoints is not already set (null or undefined)
+      // If user has explicitly set a value, preserve it
+      if (criterion.totalPoints === null || criterion.totalPoints === undefined) {
+        // Not set yet, initialize with max level points
+        totalPoints = levels.length > 0 
+          ? Math.max(...levels.map(l => Number(l.points) || 0))
+          : 0;
+      } else {
+        // User has explicitly set a value - preserve it, don't auto-update
+        totalPoints = Number(criterion.totalPoints);
+      }
+    } else {
+      // Not using custom total points, keep it as null
+      totalPoints = null;
+    }
+
     updatedCriteria[criterionIndex] = {
       ...criterion,
       levels,
       selectedLevel: nextSelectedLevel,
+      totalPoints: totalPoints,
+      // Preserve useCustomTotalPoints - don't change it
+      useCustomTotalPoints: criterion.useCustomTotalPoints !== undefined 
+        ? criterion.useCustomTotalPoints 
+        : false,
     };
 
     updatedRubric.criteria = updatedCriteria;
@@ -478,11 +597,8 @@ const useRubricStore = create((set, get) => ({
     const { currentRubric, currentCriterionIndex, correctByDefault } = state;
     if (!currentRubric || !Array.isArray(newCriteria)) return;
 
-    const sanitizedCriteria = newCriteria.map((criterion) => ({
-      name: criterion?.name || '',
-      description: criterion?.description || '',
-      enableRange: criterion?.enableRange || '',
-      levels: Array.isArray(criterion?.levels)
+    const sanitizedCriteria = newCriteria.map((criterion) => {
+      const levels = Array.isArray(criterion?.levels)
         ? criterion.levels.map((level) => ({
             name: level?.name || '',
             description: level?.description || '',
@@ -491,13 +607,43 @@ const useRubricStore = create((set, get) => ({
                 ? Number(level.points)
                 : 0,
           }))
-        : [],
-      selectedLevel:
-        criterion?.selectedLevel !== undefined
-          ? criterion.selectedLevel
-          : null,
-      comment: criterion?.comment || '',
-    }));
+        : [];
+      
+      // Handle totalPoints based on useCustomTotalPoints flag
+      // Only set totalPoints if useCustomTotalPoints is true
+      let totalPoints = null;
+      const useCustomTotalPoints = criterion?.useCustomTotalPoints !== undefined 
+        ? criterion.useCustomTotalPoints 
+        : (criterion?.totalPoints !== undefined && criterion?.totalPoints !== null); // Backward compatibility: infer from existing totalPoints
+      
+      if (useCustomTotalPoints) {
+        // Using custom total points - use provided value or default to max level points
+        if (criterion?.totalPoints !== undefined && criterion?.totalPoints !== null) {
+          totalPoints = Number(criterion.totalPoints);
+        } else {
+          totalPoints = levels.length > 0 
+            ? Math.max(...levels.map(l => Number(l.points) || 0))
+            : 0;
+        }
+      } else {
+        // Not using custom total points - keep as null (will use max points from levels)
+        totalPoints = null;
+      }
+
+      return {
+        name: criterion?.name || '',
+        description: criterion?.description || '',
+        enableRange: criterion?.enableRange || '',
+        levels: levels,
+        selectedLevel:
+          criterion?.selectedLevel !== undefined
+            ? criterion.selectedLevel
+            : null,
+        comment: criterion?.comment || '',
+        totalPoints: totalPoints,
+        useCustomTotalPoints: useCustomTotalPoints,
+      };
+    });
 
     const nextIndex =
       sanitizedCriteria.length === 0

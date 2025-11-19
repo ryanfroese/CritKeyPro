@@ -43,7 +43,14 @@ const FeedbackGenerator = () => {
   const [submittingToCanvas, setSubmittingToCanvas] = useState(false);
   
   const { currentRubric, getTotalPoints, resetGrading, saveRubricForSubmission } = useRubricStore();
-  const { selectedSubmission, selectedAssignment, saveRubricScoreForSubmission, nextUngradedSubmission } = useCanvasStore();
+  const { 
+    selectedSubmission, 
+    selectedAssignment, 
+    saveRubricScoreForSubmission, 
+    nextUngradedSubmission,
+    unstageGradeForSubmission,
+    stagedGrades,
+  } = useCanvasStore();
 
   const loadFeedbackHistory = () => {
     setFeedbackHistory(getFeedbackHistory());
@@ -156,8 +163,18 @@ const FeedbackGenerator = () => {
         saveFeedbackToHistory(feedback, currentRubric.name, historyLabel);
       }
       
-      // Save rubric state before staging
+      // Debug: Log the feedback being generated and staged
       const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+      console.log(`[FeedbackGenerator] Staging grade for submission ${submissionId}:`, {
+        assignmentId: selectedAssignment.id,
+        rubricName: currentRubric.name,
+        rubricId: currentRubric.id || 'no id',
+        feedbackLength: feedback?.length || 0,
+        feedbackPreview: feedback?.substring(0, 150) || 'no feedback',
+        grade: `${earned}/${possible}`,
+      });
+      
+      // Save rubric state before staging
       saveRubricForSubmission(selectedAssignment.id, submissionId);
       
       // Stage the grade (don't push to Canvas yet)
@@ -256,16 +273,42 @@ const FeedbackGenerator = () => {
             </IconButton>
           </Stack>
           {selectedSubmission && (
-            <Button
-              variant="contained"
-              onClick={handleSubmitToCanvas}
-              disabled={submittingToCanvas || (earned === 0 && possible === 0)}
-              color="success"
-              fullWidth
-              size="large"
-            >
-              {submittingToCanvas ? 'Staging...' : 'Stage Grade (S)'}
-            </Button>
+            <>
+              <Button
+                variant="contained"
+                onClick={handleSubmitToCanvas}
+                disabled={submittingToCanvas || (earned === 0 && possible === 0)}
+                color="success"
+                fullWidth
+                size="large"
+              >
+                {submittingToCanvas ? 'Staging...' : 'Stage Grade (S)'}
+              </Button>
+              {(() => {
+                const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+                const assignmentId = selectedAssignment?.id;
+                const hasStagedGrade = assignmentId && stagedGrades[assignmentId]?.[submissionId];
+                
+                if (hasStagedGrade) {
+                  return (
+                    <Button
+                      variant="outlined"
+                      onClick={() => {
+                        if (window.confirm('Are you sure you want to delete the staged grade for this submission?')) {
+                          unstageGradeForSubmission();
+                        }
+                      }}
+                      color="error"
+                      fullWidth
+                      size="medium"
+                    >
+                      Delete Staged Grade
+                    </Button>
+                  );
+                }
+                return null;
+              })()}
+            </>
           )}
         </Stack>
       </Paper>

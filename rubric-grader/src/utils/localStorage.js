@@ -425,6 +425,28 @@ export const stageGrade = (assignmentId, submissionId, gradeData) => {
 };
 
 /**
+ * Unstage a single grade for a submission
+ * @param {string} assignmentId
+ * @param {string} submissionId - user_id or submission id
+ */
+export const unstageGrade = (assignmentId, submissionId) => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.STAGED_GRADES);
+    const allStaged = data ? JSON.parse(data) : {};
+    if (allStaged[assignmentId] && allStaged[assignmentId][submissionId]) {
+      delete allStaged[assignmentId][submissionId];
+      // Clean up empty assignment objects
+      if (Object.keys(allStaged[assignmentId]).length === 0) {
+        delete allStaged[assignmentId];
+      }
+      localStorage.setItem(STORAGE_KEYS.STAGED_GRADES, JSON.stringify(allStaged));
+    }
+  } catch (error) {
+    console.error('Error unstaging grade from localStorage:', error);
+  }
+};
+
+/**
  * Clear staged grades for an assignment (after pushing to Canvas)
  * @param {string} assignmentId
  */

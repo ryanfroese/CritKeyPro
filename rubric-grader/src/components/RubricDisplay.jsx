@@ -354,18 +354,16 @@ const RubricDisplay = () => {
 
   const handleDraftCriterionChange = (index, field) => (event) => {
     const value = event.target.value;
-    // Use startTransition to keep input responsive
-    startTransition(() => {
-      setDraftCriteria((prev) => {
-        // Optimize: only clone the specific criterion being changed, not all criteria
-        if (!prev[index]) return prev;
-        const updated = [...prev];
-        updated[index] = {
-          ...updated[index],
-          [field]: value,
-        };
-        return updated;
-      });
+    // Update local state immediately - no need for startTransition since this is local state
+    setDraftCriteria((prev) => {
+      // Optimize: only clone the specific criterion being changed, not all criteria
+      if (!prev[index]) return prev;
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        [field]: value,
+      };
+      return updated;
     });
   };
 
@@ -445,22 +443,20 @@ const RubricDisplay = () => {
 
   const handleLevelFieldChange = (criterionIndex, levelIndex, field) => (event) => {
     const value = event.target.value;
-    // Use startTransition to keep input responsive
-    startTransition(() => {
-      setEditingLevels((prev) => {
-        // Optimize: only clone the specific level being changed, not all levels
-        const cloned = { ...prev };
-        const existingLevels = cloned[criterionIndex] || (draftCriteria[criterionIndex]?.levels || []).map(l => ({ ...l }));
-        const targetLevels = [...existingLevels];
-        if (!targetLevels[levelIndex]) {
-          targetLevels[levelIndex] = { name: '', description: '', points: 0 };
-        } else {
-          targetLevels[levelIndex] = { ...targetLevels[levelIndex] };
-        }
-        targetLevels[levelIndex][field] = value;
-        cloned[criterionIndex] = targetLevels;
-        return cloned;
-      });
+    // Update local state immediately - no need for startTransition since this is local state
+    setEditingLevels((prev) => {
+      // Optimize: only clone the specific level being changed, not all levels
+      const cloned = { ...prev };
+      const existingLevels = cloned[criterionIndex] || (draftCriteria[criterionIndex]?.levels || []).map(l => ({ ...l }));
+      const targetLevels = [...existingLevels];
+      if (!targetLevels[levelIndex]) {
+        targetLevels[levelIndex] = { name: '', description: '', points: 0 };
+      } else {
+        targetLevels[levelIndex] = { ...targetLevels[levelIndex] };
+      }
+      targetLevels[levelIndex][field] = value;
+      cloned[criterionIndex] = targetLevels;
+      return cloned;
     });
   };
 

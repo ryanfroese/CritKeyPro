@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import pLimit from 'p-limit';
 import pRetry from 'p-retry';
+import confetti from 'canvas-confetti';
 import {
   cachePdf,
   getCachedPdf,
@@ -16,7 +17,9 @@ import {
   saveRubricScore,
   getStagedGrades,
   stageGrade,
+  unstageGrade,
   clearStagedGrades,
+  clearRubricScores,
 } from '../utils/localStorage';
 import {
   setSecureItem,
@@ -71,6 +74,74 @@ const filterAssignments = (assignments = [], groupId = 'all') => {
   });
 };
 
+/**
+ * Centralized function to enrich submissions with staged grades, rubric scores, and grading status.
+ * This is the single source of truth for enrichment logic to prevent inconsistencies.
+ * 
+ * @param {Array} submissions - Array of submission objects
+ * @param {Object} stagedGrades - Map of assignmentId -> { submissionId -> { grade, feedback } }
+ * @param {Object} rubricScores - Map of assignmentId -> { submissionId -> scoreData }
+ * @param {string|null} assignmentId - Current assignment ID
+ * @returns {Array} Enriched submissions array
+ */
+const enrichSubmissions = (submissions, stagedGrades, rubricScores, assignmentId) => {
+  if (!submissions || submissions.length === 0) return submissions;
+  if (!assignmentId) return submissions;
+
+  const assignmentStagedGrades = stagedGrades[assignmentId] || {};
+  const assignmentRubricScores = rubricScores[assignmentId] || {};
+
+  return submissions.map(sub => {
+    const submissionId = String(sub.user_id || sub.id);
+    const hasStagedGrade = assignmentStagedGrades[submissionId] !== undefined;
+    const hasRubricScore = assignmentRubricScores[submissionId] !== undefined;
+
+    // Re-calculate isGraded based on current staged grades and Canvas grade
+    // This ensures we always have the latest status
+    const isGradedInCanvas = (sub.canvasGrade !== null && sub.canvasGrade !== undefined) && !sub.isAutoGradedZero;
+    const isGraded = isGradedInCanvas || hasStagedGrade;
+
+    // If we have a staged grade, update the submission with it
+    if (hasStagedGrade) {
+      return {
+        ...sub,
+        isGraded: isGraded,
+        stagedGrade: assignmentStagedGrades[submissionId],
+        rubricScore: assignmentRubricScores[submissionId] || sub.rubricScore || null,
+      };
+    }
+
+    // If we have a rubric score but no staged grade, update rubricScore
+    if (hasRubricScore && !sub.rubricScore) {
+      return {
+        ...sub,
+        isGraded: isGraded,
+        stagedGrade: undefined,
+        rubricScore: assignmentRubricScores[submissionId],
+      };
+    }
+
+    // Ensure isGraded is correct even if no staged grade or rubric score
+    if (sub.isGraded !== isGraded) {
+      return {
+        ...sub,
+        isGraded: isGraded,
+        stagedGrade: undefined,
+      };
+    }
+
+    // Remove staged grade if it doesn't exist in metadata (catch-all for cleared grades)
+    if (sub.stagedGrade !== undefined && !hasStagedGrade) {
+      return {
+        ...sub,
+        stagedGrade: undefined,
+      };
+    }
+
+    return sub;
+  });
+};
+
 const useCanvasStore = create((set, get) => ({
   // Canvas API configuration
   apiToken: null,
@@ -114,6 +185,7 @@ const useCanvasStore = create((set, get) => ({
   sortBy: 'all', // 'all' | 'graded' | 'ungraded' - default to 'all' to show all submissions
   rubricScores: {}, // Map of assignmentId -> { submissionId -> scoreData }
   stagedGrades: {}, // Map of assignmentId -> { submissionId -> { grade, feedback } }
+  confettiShownForAssignment: null, // Track which assignment we've shown confetti for
   
   // Loading states
   loadingCourses: false,
@@ -810,6 +882,9 @@ const useCanvasStore = create((set, get) => ({
       return;
     }
 
+    // Reset confetti flag when selecting a new assignment
+    set({ confettiShownForAssignment: null });
+
     // Generate unique request ID for this assignment selection
     const requestId = `${assignment.id}_${Date.now()}`;
 
@@ -927,9 +1002,15 @@ const useCanvasStore = create((set, get) => ({
 
       debugLog('[Submission Debug] After attachments filter:', submissionsWithFiles.length);
       
-      // Load rubric scores and staged grades from localStorage
+      // Load rubric scores and staged grades
+      // Use store's stagedGrades if available (more up-to-date), otherwise fall back to localStorage
+      const state = get();
+      const storedStagedGrades = state.stagedGrades[assignmentId] || {};
+      const localStorageStagedGrades = getStagedGrades(assignmentId);
+      // Merge: store's version takes precedence, but include any from localStorage that aren't in store
+      const stagedGrades = { ...localStorageStagedGrades, ...storedStagedGrades };
+      
       const rubricScores = getRubricScores(assignmentId);
-      const stagedGrades = getStagedGrades(assignmentId);
       
       // Enrich submissions with graded status and rubric scores
       const enrichedSubmissions = submissionsWithFiles.map(sub => {
@@ -950,13 +1031,29 @@ const useCanvasStore = create((set, get) => ({
         const isGradedInCanvas = (canvasGrade !== null && canvasGrade !== undefined) && !isAutoGradedZero;
         const hasRubricScore = rubricScores[submissionId] !== undefined;
         const hasStagedGrade = stagedGrades[submissionId] !== undefined;
+        const isGraded = isGradedInCanvas || hasStagedGrade;
+
+        // Debug logging for submissions with staged grades
+        if (hasStagedGrade) {
+          console.log(`[fetchSubmissions] Enriching submission ${submissionId}:`, {
+            submissionId,
+            isGradedInCanvas,
+            hasStagedGrade,
+            isGraded,
+            stagedGradeData: stagedGrades[submissionId],
+            canvasGrade,
+            isAutoGradedZero,
+            subUserId: sub.user_id,
+            subId: sub.id,
+          });
+        }
 
         // Determine submission status
         const status = isLate ? 'late' : (isAutoGradedZero ? 'auto-graded' : null);
 
         return {
           ...sub,
-          isGraded: isGradedInCanvas || hasStagedGrade,
+          isGraded: isGraded,
           canvasGrade: canvasGrade,
           canvasScore: canvasScore,
           rubricScore: rubricScores[submissionId] || null,
@@ -1130,12 +1227,27 @@ const useCanvasStore = create((set, get) => ({
     saveRubricScore(selectedAssignment.id, submissionId, scoreData);
 
     // Stage the grade (don't push to Canvas yet)
-    stageGrade(selectedAssignment.id, submissionId, {
+    const stagedGradeData = {
       grade: score.toString(),
       feedback,
-    });
+    };
+    stageGrade(selectedAssignment.id, submissionId, stagedGradeData);
 
-    // Single atomic state update for both rubric scores and staged grades
+    // Debug: Log the staged grade data to verify feedback is stored correctly
+    const feedbackLines = stagedGradeData.feedback?.split('\n') || [];
+    const firstTwoLines = feedbackLines.slice(0, 2).join('\n') || 'no feedback';
+    debugLog(`[saveRubricScoreForSubmission] Staged grade for submission ${submissionId}:`, {
+      assignmentId: selectedAssignment.id,
+      submissionId,
+      grade: stagedGradeData.grade,
+      feedbackLength: stagedGradeData.feedback?.length || 0,
+      feedbackFirstTwoLines: firstTwoLines,
+      feedbackPreview: stagedGradeData.feedback?.substring(0, 100) || 'no feedback',
+    });
+    console.log(`[saveRubricScoreForSubmission] First 2 lines of feedback for submission ${submissionId}:`, firstTwoLines);
+
+    // Only update metadata (rubricScores and stagedGrades) - don't touch arrays
+    // applySorting will handle enriching and updating arrays based on this metadata
     set((state) => {
       const assignmentId = selectedAssignment.id;
 
@@ -1156,35 +1268,184 @@ const useCanvasStore = create((set, get) => ({
         feedback,
       };
 
-      // Update submission in both filtered and unfiltered lists
-      const updateSubmission = (sub) => {
-        if (String(sub.user_id || sub.id) === submissionId) {
-          return {
-            ...sub,
-            isGraded: true,
-            rubricScore: scoreData,
-            stagedGrade: {
-              grade: score.toString(),
-              feedback,
-            },
-          };
-        }
-        return sub;
-      };
-
-      const updatedSubmissions = state.submissions.map(updateSubmission);
-      const updatedAllSubmissions = state.allSubmissions.map(updateSubmission);
+      debugLog(`[saveRubricScoreForSubmission] Updated metadata for submission ${submissionId}:`, {
+        assignmentId,
+        submissionId,
+        grade: score.toString(),
+        feedbackLength: feedback?.length || 0,
+      });
 
       return {
         rubricScores: newRubricScores,
         stagedGrades: newStagedGrades,
-        submissions: updatedSubmissions,
-        allSubmissions: updatedAllSubmissions,
+        // NO array updates here - applySorting will handle that
       };
     });
     
-    // Re-apply sorting to update the list
+    // Re-apply sorting to enrich and update arrays based on updated metadata
     get().applySorting();
+    
+    // Check if all submissions are now graded and trigger confetti
+    // Use setTimeout to ensure applySorting has completed and state is updated
+    setTimeout(() => {
+      const { allSubmissions, selectedAssignment, confettiShownForAssignment } = get();
+      if (selectedAssignment && allSubmissions.length > 0) {
+        const assignmentId = selectedAssignment.id;
+        const allGraded = allSubmissions.every(sub => sub.isGraded && !sub.isAutoGradedZero);
+        
+        // Only show confetti if all are graded AND we haven't shown it for this assignment yet
+        if (allGraded && confettiShownForAssignment !== assignmentId) {
+          // Mark that we've shown confetti for this assignment
+          set({ confettiShownForAssignment: assignmentId });
+
+          // Trigger cannon-style confetti bursts alternating left to right
+          // 3 shots from each side = 6 total bursts
+          const colors = ['#FFD700', '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8'];
+          let burstCount = 0;
+          const totalBursts = 6; // 3 from left, 3 from right
+
+          const fireCannonBurst = () => {
+            if (burstCount >= totalBursts) return;
+
+            // Alternate: even bursts from left, odd bursts from right
+            const fromLeft = burstCount % 2 === 0;
+
+            if (fromLeft) {
+              // Left side cannon burst
+              confetti({
+                particleCount: 100,
+                angle: 45,
+                spread: 30,
+                origin: { x: 0.05, y: 0.6 },
+                colors: colors,
+                startVelocity: 80,
+                gravity: 0.8,
+                scalar: 1.2,
+                drift: 0,
+                ticks: 400,
+              });
+            } else {
+              // Right side cannon burst
+              confetti({
+                particleCount: 100,
+                angle: 135,
+                spread: 30,
+                origin: { x: 0.95, y: 0.6 },
+                colors: colors,
+                startVelocity: 80,
+                gravity: 0.8,
+                scalar: 1.2,
+                drift: 0,
+                ticks: 400,
+              });
+            }
+
+            burstCount++;
+
+            // Schedule next burst after 300ms
+            if (burstCount < totalBursts) {
+              setTimeout(fireCannonBurst, 300);
+            }
+          };
+
+          // Start the first burst
+          fireCannonBurst();
+        }
+      }
+    }, 100); // Small delay to ensure applySorting has completed
+  },
+
+  // Unstage grade for current submission
+  unstageGradeForSubmission: () => {
+    const { selectedAssignment, selectedSubmission, stagedGrades } = get();
+    if (!selectedAssignment || !selectedSubmission) return;
+
+    const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+    const assignmentId = selectedAssignment.id;
+
+    // Check if there's actually a staged grade
+    const hasStagedGrade = stagedGrades[assignmentId]?.[submissionId];
+    if (!hasStagedGrade) return;
+
+    // Remove from localStorage
+    unstageGrade(assignmentId, submissionId);
+
+    // Only update metadata (stagedGrades) - don't touch arrays
+    // applySorting will handle enriching and updating arrays based on this metadata
+    set((state) => {
+      let newStagedGrades = { ...state.stagedGrades };
+      if (newStagedGrades[assignmentId]) {
+        const assignmentStaged = { ...newStagedGrades[assignmentId] };
+        delete assignmentStaged[submissionId];
+        // Clean up empty assignment objects
+        if (Object.keys(assignmentStaged).length === 0) {
+          const updatedStagedGrades = { ...newStagedGrades };
+          delete updatedStagedGrades[assignmentId];
+          newStagedGrades = updatedStagedGrades;
+        } else {
+          newStagedGrades[assignmentId] = assignmentStaged;
+        }
+      }
+
+      debugLog(`[unstageGradeForSubmission] Removed staged grade for submission ${submissionId}`);
+
+      return {
+        stagedGrades: newStagedGrades,
+        // NO array updates here - applySorting will handle that
+      };
+    });
+
+    // Re-apply sorting to enrich and update arrays based on updated metadata
+    get().applySorting();
+
+    debugLog(`[unstageGradeForSubmission] Unstaged grade for submission ${submissionId}`);
+  },
+
+  clearAllStagedGradesForAssignment: () => {
+    const { selectedAssignment, stagedGrades, rubricScores } = get();
+    if (!selectedAssignment) return;
+
+    const assignmentId = selectedAssignment.id;
+    const assignmentStagedGrades = stagedGrades[assignmentId];
+    const assignmentRubricScores = rubricScores[assignmentId];
+
+    // Check if there are any staged grades or rubric scores
+    const hasStagedGrades = assignmentStagedGrades && Object.keys(assignmentStagedGrades).length > 0;
+    const hasRubricScores = assignmentRubricScores && Object.keys(assignmentRubricScores).length > 0;
+
+    if (!hasStagedGrades && !hasRubricScores) {
+      return;
+    }
+
+    // Clear both staged grades and rubric scores from localStorage
+    clearStagedGrades(assignmentId);
+    clearRubricScores(assignmentId);
+
+    // Update state metadata - clear both staged grades and rubric scores
+    set((state) => {
+      // Defensive check (unlikely but safe)
+      if (!state.stagedGrades || !state.rubricScores) {
+        debugLog('[clearAllStagedGradesForAssignment] State not properly initialized');
+        return {};
+      }
+
+      // Use destructuring to create new objects WITHOUT the assignmentId key
+      // This guarantees a clean reference change that Zustand and React will detect
+      const { [assignmentId]: removedStaged, ...newStagedGrades } = state.stagedGrades;
+      const { [assignmentId]: removedScores, ...newRubricScores } = state.rubricScores;
+
+      debugLog(`[clearAllStagedGradesForAssignment] Cleared all staged grades and rubric scores for assignment ${assignmentId}`);
+
+      return {
+        stagedGrades: newStagedGrades,
+        rubricScores: newRubricScores,
+      };
+    });
+
+    // Re-apply sorting to update arrays (submissions will be marked as ungraded)
+    get().applySorting();
+
+    debugLog(`[clearAllStagedGradesForAssignment] Successfully cleared all staged grades and rubric scores - ready for re-grading`);
   },
 
   // Set sort order
@@ -1195,12 +1456,38 @@ const useCanvasStore = create((set, get) => ({
 
   // Apply sorting to submissions (for display only, doesn't affect allSubmissions)
   applySorting: () => {
-    const { allSubmissions, sortBy } = get();
+    const { allSubmissions, sortBy, stagedGrades, selectedAssignment, rubricScores } = get();
     debugLog('[applySorting] Starting with allSubmissions:', allSubmissions.length, 'sortBy:', sortBy);
     if (!allSubmissions.length) return;
 
-    // Start with all submissions, then filter/sort for display
-    let sorted = [...allSubmissions];
+    // Use centralized enrichment function - single source of truth
+    const assignmentId = selectedAssignment?.id;
+    const enriched = enrichSubmissions(allSubmissions, stagedGrades, rubricScores, assignmentId);
+
+    // Start with enriched submissions, then filter/sort for display
+    let sorted = [...enriched];
+    
+    // Debug: Check for submissions with staged grades
+    if (selectedAssignment) {
+      const assignmentStagedGrades = stagedGrades[selectedAssignment.id] || {};
+      const stagedSubmissionIds = Object.keys(assignmentStagedGrades);
+      if (stagedSubmissionIds.length > 0) {
+        console.log(`[applySorting] Found ${stagedSubmissionIds.length} staged grades for assignment ${selectedAssignment.id}`);
+        stagedSubmissionIds.forEach(subId => {
+          const sub = sorted.find(s => String(s.user_id || s.id) === subId);
+          if (sub) {
+            console.log(`[applySorting] Submission ${subId} in sorted array:`, {
+              submissionId: subId,
+              isGraded: sub.isGraded,
+              hasStagedGrade: !!sub.stagedGrade,
+              stagedGradeGrade: sub.stagedGrade?.grade,
+            });
+          } else {
+            console.warn(`[applySorting] Staged submission ${subId} not found in sorted array!`);
+          }
+        });
+      }
+    }
 
     if (sortBy === 'ungraded') {
       // Show ungraded submissions (including auto-graded zeros)
@@ -1240,15 +1527,17 @@ const useCanvasStore = create((set, get) => ({
       }
     }
 
-    // Single atomic state update for both submissions and index
+    // Single atomic state update for both submissions, allSubmissions, and index
+    // Update allSubmissions with enriched data so StudentSelector dropdown sees the updates
     set({
       submissions: sorted,
+      allSubmissions: enriched, // Update allSubmissions with enriched data
       submissionIndex: newIndex
     });
   },
 
   // Push all staged grades to Canvas
-  pushAllStagedGrades: async () => {
+  pushAllStagedGrades: async (includeComments = true) => {
     const { selectedCourse, selectedAssignment, apiToken, canvasApiBase, stagedGrades } = get();
     if (!selectedCourse || !selectedAssignment || !apiToken) {
       set({ error: 'Missing required data for pushing grades' });
@@ -1256,7 +1545,19 @@ const useCanvasStore = create((set, get) => ({
     }
 
     const assignmentId = selectedAssignment.id;
-    const gradesToPush = stagedGrades[assignmentId] || {};
+    // Use store's stagedGrades (most up-to-date), but also check localStorage as fallback
+    const storeStagedGrades = stagedGrades[assignmentId] || {};
+    const localStorageStagedGrades = getStagedGrades(assignmentId);
+    // Merge: store's version takes precedence
+    const gradesToPush = { ...localStorageStagedGrades, ...storeStagedGrades };
+    
+    // Debug: Log what we're about to push
+    debugLog(`[pushAllStagedGrades] Preparing to push ${Object.keys(gradesToPush).length} grades:`, {
+      assignmentId,
+      submissionIds: Object.keys(gradesToPush),
+      fromStore: Object.keys(storeStagedGrades).length,
+      fromLocalStorage: Object.keys(localStorageStagedGrades).length,
+    });
     
     if (Object.keys(gradesToPush).length === 0) {
       set({ error: 'No staged grades to push' });
@@ -1266,75 +1567,180 @@ const useCanvasStore = create((set, get) => ({
     set({ pushingGrades: true, error: null });
     
     try {
-      const results = [];
-      const errors = [];
+      // Get submissions to access attempt numbers
+      const { allSubmissions } = get();
       
-      // Push all grades in parallel
-      const pushPromises = Object.entries(gradesToPush).map(async ([submissionId, gradeData]) => {
-        try {
-          const response = await fetch(
-            `${API_BASE}/api/courses/${selectedCourse.id}/assignments/${assignmentId}/submissions/${submissionId}`,
-            {
-              method: 'PUT',
-              headers: {
-                'Authorization': `Bearer ${apiToken}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                posted_grade: gradeData.grade,
-                comment: gradeData.feedback,
-                canvasBase: canvasApiBase,
-              }),
+      // Build grade_data object for batch update
+      const grade_data = {};
+      for (const [submissionId, gradeData] of Object.entries(gradesToPush)) {
+        // Find the submission object to get the attempt number
+        const submission = allSubmissions.find(
+          sub => String(sub.user_id || sub.id) === String(submissionId)
+        );
+        
+        // Debug: Log the grade data being pushed for this submission
+        debugLog(`[pushAllStagedGrades] Processing submission ${submissionId}:`, {
+          grade: gradeData.grade,
+          feedbackLength: gradeData.feedback?.length || 0,
+          feedbackPreview: gradeData.feedback?.substring(0, 100) || 'no feedback',
+          hasSubmission: !!submission,
+        });
+        
+        // Get the most recent attempt number
+        let attemptNumber = null;
+        if (submission) {
+          // The submission object has an 'attempt' field which is the current/latest attempt
+          // This field is preserved from Canvas API response via ...sub spread in fetchSubmissions
+          if (submission.attempt !== null && submission.attempt !== undefined) {
+            attemptNumber = submission.attempt;
+          } else if (submission.submission_history && submission.submission_history.length > 0) {
+            // Fallback: find the highest attempt number from history
+            const attempts = submission.submission_history
+              .map(h => h.attempt)
+              .filter(a => a !== null && a !== undefined);
+            if (attempts.length > 0) {
+              attemptNumber = Math.max(...attempts);
             }
-          );
-
-          if (!response.ok) {
-            const errorText = await response.text().catch(() => null);
-            let message = `Failed to submit grade for submission ${submissionId}: ${response.status} ${response.statusText}`;
-            if (errorText) {
-              try {
-                const errorData = JSON.parse(errorText);
-                if (errorData?.error) {
-                  message = errorData.error;
-                }
-              } catch (parseError) {
-                message = `${message} - ${errorText.substring(0, 200)}`;
-              }
-            }
-            throw new Error(message);
           }
-
-          const submissionText = await response.text();
-          let updatedSubmission;
-          try {
-            updatedSubmission = JSON.parse(submissionText);
-          } catch (parseError) {
-            throw new Error('Failed to parse submission update response from server.');
+        }
+        
+        grade_data[submissionId] = {
+          posted_grade: gradeData.grade,
+        };
+        
+        // Include comment only if includeComments is true
+        if (includeComments && gradeData.feedback) {
+          grade_data[submissionId].text_comment = gradeData.feedback;
+          
+          // Include attempt number if available and comment exists
+          if (attemptNumber !== null) {
+            grade_data[submissionId].attempt = attemptNumber;
           }
           
-          results.push({ submissionId, submission: updatedSubmission });
-        } catch (error) {
-          errors.push({ submissionId, error: error.message });
+          // Debug: Log what's being sent to Canvas
+          debugLog(`[pushAllStagedGrades] Sending to Canvas for ${submissionId}:`, {
+            grade: grade_data[submissionId].posted_grade,
+            commentLength: grade_data[submissionId].text_comment?.length || 0,
+            attempt: grade_data[submissionId].attempt || 'not set',
+          });
         }
+      }
+
+      // Make batch update request
+      const params = new URLSearchParams();
+      if (canvasApiBase) {
+        params.append('canvasBase', canvasApiBase);
+      }
+      const url = params.toString()
+        ? `${API_BASE}/api/courses/${selectedCourse.id}/assignments/${assignmentId}/submissions/update_grades?${params.toString()}`
+        : `${API_BASE}/api/courses/${selectedCourse.id}/assignments/${assignmentId}/submissions/update_grades`;
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          grade_data,
+          canvasBase: canvasApiBase,
+        }),
       });
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => null);
+        let message = `Failed to batch update grades: ${response.status} ${response.statusText}`;
+        if (errorText) {
+          try {
+            const errorData = JSON.parse(errorText);
+            if (errorData?.error) {
+              message = errorData.error;
+            }
+          } catch (parseError) {
+            message = `${message} - ${errorText.substring(0, 200)}`;
+          }
+        }
+        throw new Error(message);
+      }
+
+      const progressData = await response.json();
       
-      await Promise.all(pushPromises);
+      // Canvas returns a Progress object for async operations
+      // Poll for completion if progress_id is present
+      if (progressData.id) {
+        const progressId = progressData.id;
+        let progressComplete = false;
+        let pollAttempts = 0;
+        const maxPollAttempts = 60; // Poll for up to 60 seconds (1 second intervals)
+        
+        debugLog(`[pushAllStagedGrades] Batch update started, progress ID: ${progressId}`);
+        
+        while (!progressComplete && pollAttempts < maxPollAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+          
+          const progressParams = new URLSearchParams();
+          if (canvasApiBase) {
+            progressParams.append('canvasBase', canvasApiBase);
+          }
+          const progressUrl = progressParams.toString()
+            ? `${API_BASE}/api/progress/${progressId}?${progressParams.toString()}`
+            : `${API_BASE}/api/progress/${progressId}`;
+
+          const progressResponse = await fetch(progressUrl, {
+            headers: {
+              'Authorization': `Bearer ${apiToken}`,
+            },
+          });
+
+          if (progressResponse.ok) {
+            const progress = await progressResponse.json();
+            debugLog(`[pushAllStagedGrades] Progress: ${progress.workflow_state} (${progress.completion || 0}%)`);
+            if (progress.workflow_state === 'completed') {
+              progressComplete = true;
+            } else if (progress.workflow_state === 'failed') {
+              throw new Error('Batch grade update failed on Canvas server');
+            }
+          }
+          
+          pollAttempts++;
+        }
+
+        if (!progressComplete) {
+          console.warn('Batch update progress polling timed out, but update may still be processing');
+        } else {
+          debugLog(`[pushAllStagedGrades] Batch update completed successfully`);
+        }
+      }
+
+      // After batch update completes, mark all staged submissions as graded
+      // Note: We don't have individual submission responses from batch update,
+      // so we'll mark them as graded based on the fact that the batch succeeded
+      const results = Object.keys(gradesToPush).map(submissionId => ({
+        submissionId,
+        submission: null, // We don't have individual submission data from batch update
+      }));
       
       // Clear staged grades for this assignment
       clearStagedGrades(assignmentId);
       
-      // Update submissions in both filtered and unfiltered lists
-      const { submissions, allSubmissions } = get();
+      // Update submissions - mark all staged submissions as graded
+      // Note: We don't have individual submission responses from batch update,
+      // so we'll mark them as graded based on the fact that the batch succeeded
+      const { submissions } = get();
+      const stagedSubmissionIds = new Set(Object.keys(gradesToPush).map(id => String(id)));
+      
       const updateSubmission = (sub) => {
         const submissionId = String(sub.user_id || sub.id);
-        const pushedResult = results.find(r => String(r.submissionId) === submissionId);
-        if (pushedResult) {
+        if (stagedSubmissionIds.has(submissionId)) {
+          // Mark as graded - actual grade/score will be updated when Canvas syncs
+          const gradeData = gradesToPush[submissionId];
           return {
             ...sub,
             isGraded: true,
-            canvasGrade: pushedResult.submission.grade,
-            canvasScore: pushedResult.submission.score,
             stagedGrade: null,
+            // Keep existing canvasGrade/canvasScore if available, or use staged grade
+            canvasGrade: sub.canvasGrade || gradeData?.grade || null,
+            canvasScore: sub.canvasScore || (gradeData?.grade?.split('/')[0]) || null,
           };
         }
         return sub;
@@ -1356,14 +1762,9 @@ const useCanvasStore = create((set, get) => ({
       // Re-apply sorting after pushing grades
       get().applySorting();
 
-      if (errors.length > 0) {
-        set({
-          error: `Pushed ${results.length} grades successfully, but ${errors.length} failed. Check console for details.`,
-        });
-        console.error('Errors pushing grades:', errors);
-      } else {
-        set({ error: null });
-      }
+      // Batch update succeeded - all grades were pushed
+      set({ error: null });
+      debugLog(`[pushAllStagedGrades] Successfully pushed ${results.length} grades in batch`);
 
       // Auto-cleanup: Check if all submissions are graded and all staged grades pushed
       try {
@@ -1383,82 +1784,9 @@ const useCanvasStore = create((set, get) => ({
         console.error('Error during auto-cleanup after pushing grades:', error);
       }
 
-      return { results, errors };
+      return { results, errors: [] }; // Batch update either succeeds or fails entirely
     } catch (error) {
       set({ error: getErrorMessage(error), pushingGrades: false });
-      throw error;
-    }
-  },
-
-  // Submit grade and feedback to Canvas (immediate, not staged)
-  submitGrade: async (grade, feedback) => {
-    const { selectedCourse, selectedAssignment, selectedSubmission, apiToken, canvasApiBase } = get();
-    if (!selectedCourse || !selectedAssignment || !selectedSubmission || !apiToken) {
-      set({ error: 'Missing required data for submission' });
-      return;
-    }
-
-    try {
-      const response = await fetch(
-        `${API_BASE}/api/courses/${selectedCourse.id}/assignments/${selectedAssignment.id}/submissions/${selectedSubmission.user_id}`,
-        {
-          method: 'PUT',
-          headers: {
-            'Authorization': `Bearer ${apiToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            posted_grade: grade,
-            comment: feedback,
-            canvasBase: canvasApiBase,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => null);
-        let message = `Failed to submit grade: ${response.status} ${response.statusText}`;
-        if (errorText) {
-          try {
-            const errorData = JSON.parse(errorText);
-            if (errorData?.error) {
-              message = errorData.error;
-            }
-          } catch (parseError) {
-            message = `${message} - ${errorText.substring(0, 200)}`;
-          }
-        }
-        throw new Error(message);
-      }
-
-      const submissionText = await response.text();
-      let updatedSubmission;
-      try {
-        updatedSubmission = JSON.parse(submissionText);
-      } catch (parseError) {
-        console.error('Failed to parse submission update JSON:', submissionText);
-        throw new Error('Failed to parse submission update response from server.');
-      }
-      // Update the submission in both filtered and unfiltered lists
-      const { submissions, allSubmissions } = get();
-      const updateSubmission = (sub) => {
-        if (String(sub.user_id || sub.id) === String(updatedSubmission.user_id || updatedSubmission.id)) {
-          return {
-            ...sub,
-            isGraded: true,
-            canvasGrade: updatedSubmission.grade,
-            canvasScore: updatedSubmission.score,
-          };
-        }
-        return sub;
-      };
-
-      const updatedSubmissions = submissions.map(updateSubmission);
-      const updatedAllSubmissions = allSubmissions.map(updateSubmission);
-      set({ submissions: updatedSubmissions, allSubmissions: updatedAllSubmissions });
-      return updatedSubmission;
-    } catch (error) {
-      set({ error: getErrorMessage(error) });
       throw error;
     }
   },

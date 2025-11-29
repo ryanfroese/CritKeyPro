@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Box,
   Paper,
@@ -41,9 +41,21 @@ const FeedbackGenerator = () => {
   const [feedbackHistory, setFeedbackHistory] = useState([]);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [submittingToCanvas, setSubmittingToCanvas] = useState(false);
-  
+
   const { currentRubric, getTotalPoints, resetGrading, saveRubricForSubmission } = useRubricStore();
-  const { selectedSubmission, selectedAssignment, saveRubricScoreForSubmission, nextUngradedSubmission } = useCanvasStore();
+  const {
+    selectedSubmission,
+    selectedAssignment,
+    saveRubricScoreForSubmission,
+    nextUngradedSubmission,
+    unstageGradeForSubmission,
+    stagedGrades,
+  } = useCanvasStore();
+
+  // Clear feedback text when submission changes to prevent stale state
+  useEffect(() => {
+    setFeedbackText('');
+  }, [selectedSubmission?.id]);
 
   const loadFeedbackHistory = () => {
     setFeedbackHistory(getFeedbackHistory());
@@ -134,35 +146,42 @@ const FeedbackGenerator = () => {
     setSubmittingToCanvas(true);
     try {
       const { earned, possible } = getTotalPoints();
-      
-      // Generate feedback if not already generated
-      let feedback = feedbackText;
-      if (!feedback) {
-        feedback = generateFeedbackText(currentRubric);
-        setFeedbackText(feedback);
-        
-        // Copy to clipboard
-        try {
-          await navigator.clipboard.writeText(feedback);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        } catch (err) {
-          console.error('Failed to copy:', err);
-        }
-        
-        // Save to history
-        const label = currentRubric.feedbackLabel?.trim();
-        const historyLabel = label || currentRubric.name;
-        saveFeedbackToHistory(feedback, currentRubric.name, historyLabel);
+
+      // Always generate fresh feedback from current rubric state
+      const feedback = generateFeedbackText(currentRubric);
+      setFeedbackText(feedback);
+
+      // Copy to clipboard
+      try {
+        await navigator.clipboard.writeText(feedback);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (err) {
+        console.error('Failed to copy:', err);
       }
-      
-      // Save rubric state before staging
+
+      // Save to history
+      const label = currentRubric.feedbackLabel?.trim();
+      const historyLabel = label || currentRubric.name;
+      saveFeedbackToHistory(feedback, currentRubric.name, historyLabel);
+
+      // Debug: Log the feedback being generated and staged
       const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+      console.log(`[FeedbackGenerator] Staging grade for submission ${submissionId}:`, {
+        assignmentId: selectedAssignment.id,
+        rubricName: currentRubric.name,
+        rubricId: currentRubric.id || 'no id',
+        feedbackLength: feedback?.length || 0,
+        feedbackPreview: feedback?.substring(0, 150) || 'no feedback',
+        grade: `${earned}/${possible}`,
+      });
+
+      // Save rubric state before staging
       saveRubricForSubmission(selectedAssignment.id, submissionId);
-      
+
       // Stage the grade (don't push to Canvas yet)
       saveRubricScoreForSubmission(`${earned}/${possible}`, feedback);
-      
+
       // Show success message
       setSnackbarOpen(true);
 
@@ -256,16 +275,42 @@ const FeedbackGenerator = () => {
             </IconButton>
           </Stack>
           {selectedSubmission && (
-            <Button
-              variant="contained"
-              onClick={handleSubmitToCanvas}
-              disabled={submittingToCanvas || (earned === 0 && possible === 0)}
-              color="success"
-              fullWidth
-              size="large"
-            >
-              {submittingToCanvas ? 'Staging...' : 'Stage Grade (S)'}
-            </Button>
+            <>
+              <Button
+                variant="contained"
+                onClick={handleSubmitToCanvas}
+                disabled={submittingToCanvas || (earned === 0 && possible === 0)}
+                color="success"
+                fullWidth
+                size="large"
+              >
+                {submittingToCanvas ? 'Staging...' : 'Stage Grade (S)'}
+              </Button>
+              {(() => {
+                const submissionId = String(selectedSubmission.user_id || selectedSubmission.id);
+                const assignmentId = selectedAssignment?.id;
+                const hasStagedGrade = assignmentId && stagedGrades[assignmentId]?.[submissionId];
+                
+                if (hasStagedGrade) {
+                  return (
+                    <Button
+                      variant="outlined"
+                      onClick={() => {
+                        if (window.confirm('Are you sure you want to delete the staged grade for this submission?')) {
+                          unstageGradeForSubmission();
+                        }
+                      }}
+                      color="error"
+                      fullWidth
+                      size="medium"
+                    >
+                      Delete Staged Grade
+                    </Button>
+                  );
+                }
+                return null;
+              })()}
+            </>
           )}
         </Stack>
       </Paper>

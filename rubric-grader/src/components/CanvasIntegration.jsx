@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import {
   Box,
   Paper,
@@ -67,6 +67,7 @@ const CanvasIntegration = () => {
     setParallelDownloadLimit,
     courseRubrics,
     assignmentRubric,
+    stagedGrades,
     loadingRubrics,
     fetchCourseRubrics,
   } = useCanvasStore();
@@ -431,24 +432,85 @@ const CanvasIntegration = () => {
                 </MenuItem>
               ) : assignments.length === 0 ? (
                 <MenuItem disabled>No assignments available (showing published with submissions only)</MenuItem>
-              ) : (
-                assignments.map((assignment) => (
-                  <MenuItem key={assignment.id} value={assignment.id}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                      <Typography variant="body2" sx={{ flex: 1 }}>
-                        {assignment.name}
-                      </Typography>
-                      {assignment.points_possible !== null && assignment.points_possible !== undefined && (
-                        <Typography variant="caption" color="text.secondary" sx={{ ml: 2 }}>
-                          {Number.isInteger(assignment.points_possible)
-                            ? `${assignment.points_possible} pts`
-                            : `${Number(assignment.points_possible).toFixed(1)} pts`}
-                        </Typography>
-                      )}
-                    </Box>
-                  </MenuItem>
-                ))
-              )}
+              ) : (() => {
+                // Sort assignments: those with needs_grading_count > 0 first, then by name
+                const sortedAssignments = [...assignments].sort((a, b) => {
+                  const aNeedsGrading = (a.needs_grading_count ?? 0) > 0;
+                  const bNeedsGrading = (b.needs_grading_count ?? 0) > 0;
+                  
+                  // If one needs grading and the other doesn't, prioritize the one that needs grading
+                  if (aNeedsGrading && !bNeedsGrading) return -1;
+                  if (!aNeedsGrading && bNeedsGrading) return 1;
+                  
+                  // If both need grading or both don't, sort by name
+                  const nameA = (a.name || '').toLowerCase();
+                  const nameB = (b.name || '').toLowerCase();
+                  return nameA.localeCompare(nameB);
+                });
+                
+                return sortedAssignments.map((assignment) => {
+                  const assignmentId = String(assignment.id);
+                  const needsGradingCount = assignment.needs_grading_count ?? 0;
+                  const stagedCount = stagedGrades[assignmentId] ? Object.keys(stagedGrades[assignmentId]).length : 0;
+                  
+                  // Determine indicator: blue (needs grading), yellow (staged), green (all done)
+                  let indicatorColor = 'success'; // green
+                  let indicatorCount = null;
+                  
+                  if (needsGradingCount > 0) {
+                    indicatorColor = 'primary'; // blue
+                    indicatorCount = needsGradingCount;
+                  } else if (stagedCount > 0) {
+                    indicatorColor = 'warning'; // yellow
+                    indicatorCount = stagedCount;
+                  }
+                  
+                  return (
+                    <MenuItem key={assignment.id} value={assignment.id}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1, minWidth: 0 }}>
+                          {/* Colored dot indicator */}
+                          <Box
+                            sx={{
+                              width: 8,
+                              height: 8,
+                              borderRadius: '50%',
+                              backgroundColor: 
+                                indicatorColor === 'primary' ? 'primary.main' :
+                                indicatorColor === 'warning' ? 'warning.main' :
+                                'success.main',
+                              flexShrink: 0,
+                            }}
+                          />
+                          <Typography variant="body2" sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {assignment.name}
+                          </Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, ml: 1 }}>
+                          {/* Indicator count */}
+                          {indicatorCount !== null && (
+                            <Typography 
+                              variant="caption" 
+                              color={indicatorColor === 'primary' ? 'primary.main' : indicatorColor === 'warning' ? 'warning.main' : 'success.main'}
+                              sx={{ fontWeight: 'medium', whiteSpace: 'nowrap' }}
+                            >
+                              {indicatorCount}
+                            </Typography>
+                          )}
+                          {/* Points */}
+                          {assignment.points_possible !== null && assignment.points_possible !== undefined && (
+                            <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: 'nowrap' }}>
+                              {Number.isInteger(assignment.points_possible)
+                                ? `${assignment.points_possible} pts`
+                                : `${Number(assignment.points_possible).toFixed(1)} pts`}
+                            </Typography>
+                          )}
+                        </Box>
+                      </Box>
+                    </MenuItem>
+                  );
+                });
+              })()}
             </Select>
           </FormControl>
         )}

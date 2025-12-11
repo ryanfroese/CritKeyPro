@@ -20,6 +20,9 @@ import {
   unstageGrade,
   clearStagedGrades,
   clearRubricScores,
+  logRateLimitError,
+  saveApiRateTimestamps,
+  getApiRateTimestamps,
 } from '../utils/localStorage';
 import {
   setSecureItem,
@@ -40,11 +43,36 @@ const debugLog = (...args) => {
 };
 
 // Helper function to provide user-friendly error messages
-const getErrorMessage = (error) => {
+// Optionally logs 429 errors with API rate if getApiRateFn and endpoint are provided
+const getErrorMessage = (error, getApiRateFn = null, endpoint = 'unknown') => {
+  // Detect rate limiting errors (429 Too Many Requests) FIRST
+  // Check for status code 429, or common rate limit messages
+  // This must be checked before generic "Failed to fetch" to avoid false positives
+  const isRateLimitError = 
+    error.status === 429 || 
+    error.message.includes('429') || 
+    error.message.toLowerCase().includes('too many requests') ||
+    error.message.toLowerCase().includes('rate limit');
+  
+  if (isRateLimitError) {
+    // Log the error with API rate if available
+    if (getApiRateFn) {
+      try {
+        const apiRate = getApiRateFn();
+        logRateLimitError(apiRate, endpoint);
+      } catch (logError) {
+        console.error('Error logging rate limit error:', logError);
+      }
+    }
+    return 'Rate limit exceeded: Too many requests to Canvas API. Please wait a moment and try again. Canvas limits the number of API requests per minute to prevent server overload.';
+  }
+  
   // Detect connection errors (server not running)
+  // Only check this if it's NOT a rate limit error
   if (error.message.includes('Failed to fetch') || error.name === 'TypeError') {
     return 'Backend server not running. Please start the server with: cd server && npm run dev';
   }
+  
   return error.message;
 };
 
@@ -75,8 +103,29 @@ const filterAssignments = (assignments = [], groupId = 'all') => {
 };
 
 /**
+ * Helper function to compute if a submission needs grading.
+ * This should ALWAYS be computed, never stored as a property.
+ * 
+ * @param {Object} sub - Submission object
+ * @returns {boolean} True if submission needs grading
+ */
+const needsGrading = (sub) => !sub.isGraded || sub.isAutoGradedZero;
+
+/**
  * Centralized function to enrich submissions with staged grades, rubric scores, and grading status.
  * This is the single source of truth for enrichment logic to prevent inconsistencies.
+ * 
+ * Properties from Canvas API (used directly):
+ * - sub.grade, sub.score, sub.late, sub.submitted_at, sub.user_id, sub.id, sub.attachments, sub.user
+ * 
+ * Properties generated in app (computed):
+ * - isGraded: Single source of truth - true if has Canvas grade (not auto-zero) OR has staged grade
+ * - isAutoGradedZero: True if late submission with grade/score 0 and no manual grading
+ * - canvasGrade, canvasScore: Copies of API properties for clarity
+ * - isLate: Computed from sub.late or submitted_at vs due_date
+ * - rubricScore, stagedGrade: Added from localStorage/store
+ * 
+ * NOTE: needsGrading is NOT a property - always compute it using: !sub.isGraded || sub.isAutoGradedZero
  * 
  * @param {Array} submissions - Array of submission objects
  * @param {Object} stagedGrades - Map of assignmentId -> { submissionId -> { grade, feedback } }
@@ -96,9 +145,16 @@ const enrichSubmissions = (submissions, stagedGrades, rubricScores, assignmentId
     const hasStagedGrade = assignmentStagedGrades[submissionId] !== undefined;
     const hasRubricScore = assignmentRubricScores[submissionId] !== undefined;
 
+    // Re-calculate isAutoGradedZero based on current state
+    // If we have a staged grade or rubric score, it's not an auto-graded zero
+    // Otherwise, use the stored value from initial fetch
+    const isAutoGradedZero = (hasStagedGrade || hasRubricScore) 
+      ? false 
+      : (sub.isAutoGradedZero || false);
+
     // Re-calculate isGraded based on current staged grades and Canvas grade
     // This ensures we always have the latest status
-    const isGradedInCanvas = (sub.canvasGrade !== null && sub.canvasGrade !== undefined) && !sub.isAutoGradedZero;
+    const isGradedInCanvas = (sub.canvasGrade !== null && sub.canvasGrade !== undefined) && !isAutoGradedZero;
     const isGraded = isGradedInCanvas || hasStagedGrade;
 
     // If we have a staged grade, update the submission with it
@@ -106,6 +162,7 @@ const enrichSubmissions = (submissions, stagedGrades, rubricScores, assignmentId
       return {
         ...sub,
         isGraded: isGraded,
+        isAutoGradedZero: false, // Staged grade means it's manually graded
         stagedGrade: assignmentStagedGrades[submissionId],
         rubricScore: assignmentRubricScores[submissionId] || sub.rubricScore || null,
       };
@@ -116,16 +173,18 @@ const enrichSubmissions = (submissions, stagedGrades, rubricScores, assignmentId
       return {
         ...sub,
         isGraded: isGraded,
+        isAutoGradedZero: false, // Rubric score means it's been graded
         stagedGrade: undefined,
         rubricScore: assignmentRubricScores[submissionId],
       };
     }
 
-    // Ensure isGraded is correct even if no staged grade or rubric score
-    if (sub.isGraded !== isGraded) {
+    // Ensure isGraded and isAutoGradedZero are correct even if no staged grade or rubric score
+    if (sub.isGraded !== isGraded || sub.isAutoGradedZero !== isAutoGradedZero) {
       return {
         ...sub,
         isGraded: isGraded,
+        isAutoGradedZero: isAutoGradedZero,
         stagedGrade: undefined,
       };
     }
@@ -135,6 +194,8 @@ const enrichSubmissions = (submissions, stagedGrades, rubricScores, assignmentId
       return {
         ...sub,
         stagedGrade: undefined,
+        // Recalculate isAutoGradedZero when staged grade is removed
+        isAutoGradedZero: isAutoGradedZero,
       };
     }
 
@@ -196,6 +257,48 @@ const useCanvasStore = create((set, get) => ({
   
   // Error states
   error: null,
+  
+  // API Rate Tracking
+  apiRequestTimestamps: [], // Array of timestamps for API requests (last 60 seconds)
+  showApiRate: false, // Toggle to show/hide API rate display
+
+  // Track API request for rate calculation
+  trackApiRequest: () => {
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000; // 60 seconds
+    
+    set((state) => {
+      // Remove timestamps older than 1 minute
+      const recentTimestamps = state.apiRequestTimestamps.filter(ts => ts > oneMinuteAgo);
+      // Add current timestamp
+      const newTimestamps = [...recentTimestamps, now];
+      
+      // Persist to localStorage
+      saveApiRateTimestamps(newTimestamps);
+      
+      return {
+        apiRequestTimestamps: newTimestamps
+      };
+    });
+  },
+  
+  // Calculate current API rate (requests per minute)
+  getApiRate: () => {
+    const { apiRequestTimestamps } = get();
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    
+    // Count requests in the last minute
+    const recentRequests = apiRequestTimestamps.filter(ts => ts > oneMinuteAgo).length;
+    return recentRequests;
+  },
+  
+  // Toggle API rate display
+  setShowApiRate: (show) => {
+    set({ showApiRate: show });
+    // Persist to localStorage
+    localStorage.setItem('canvas_show_api_rate', show ? 'true' : 'false');
+  },
 
   // Set API token
   setApiToken: (token) => {
@@ -226,6 +329,8 @@ const useCanvasStore = create((set, get) => ({
     const savedCourseId = localStorage.getItem('canvas_selected_course_id');
     const savedAssignmentGroupId = localStorage.getItem('canvas_selected_assignment_group_id');
     const savedParallelLimit = localStorage.getItem('canvas_parallel_download_limit');
+    const savedShowApiRate = localStorage.getItem('canvas_show_api_rate');
+    const savedApiRateTimestamps = getApiRateTimestamps();
     
     if (token) {
       set({ apiToken: token });
@@ -235,6 +340,13 @@ const useCanvasStore = create((set, get) => ({
     }
     if (offlineMode) {
       set({ offlineMode: true });
+    }
+    // Restore API rate display toggle state (explicitly set true or false if saved)
+    if (savedShowApiRate !== null) {
+      set({ showApiRate: savedShowApiRate === 'true' });
+    }
+    if (savedApiRateTimestamps.length > 0) {
+      set({ apiRequestTimestamps: savedApiRateTimestamps });
     }
     if (savedCourseId) {
       set({ selectedCourseId: savedCourseId });
@@ -543,6 +655,10 @@ const useCanvasStore = create((set, get) => ({
         params.append('canvasBase', canvasApiBase);
       }
       const url = params.toString() ? `${API_BASE}/api/courses?${params.toString()}` : `${API_BASE}/api/courses`;
+      
+      // Track API request for rate calculation
+      get().trackApiRequest();
+      
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${apiToken}`,
@@ -563,7 +679,9 @@ const useCanvasStore = create((set, get) => ({
             message = `${message} - ${errorText.substring(0, 200)}`;
           }
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status; // Preserve status code for error detection
+        throw error;
       }
       const requestUrl = response.headers.get('X-Canvas-Request-Url');
       const coursesDataText = await response.text();
@@ -657,7 +775,7 @@ const useCanvasStore = create((set, get) => ({
         }
       }
     } catch (error) {
-      set({ error: getErrorMessage(error), loadingCourses: false });
+      set({ error: getErrorMessage(error, get().getApiRate, '/api/courses'), loadingCourses: false });
     }
   },
 
@@ -735,6 +853,10 @@ const useCanvasStore = create((set, get) => ({
       const url = params.toString()
         ? `${API_BASE}/api/courses/${courseId}/assignment-groups?${params.toString()}`
         : `${API_BASE}/api/courses/${courseId}/assignment-groups`;
+      
+      // Track API request for rate calculation
+      get().trackApiRequest();
+      
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${apiToken}`,
@@ -754,7 +876,9 @@ const useCanvasStore = create((set, get) => ({
             message = `${message} - ${errorText.substring(0, 200)}`;
           }
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status; // Preserve status code for error detection
+        throw error;
       }
       const requestUrl = response.headers.get('X-Canvas-Request-Url');
       const groupsText = await response.text();
@@ -802,7 +926,7 @@ const useCanvasStore = create((set, get) => ({
         }
       }
     } catch (error) {
-      set({ error: getErrorMessage(error) });
+      set({ error: getErrorMessage(error, get().getApiRate, `/api/courses/${courseId}/assignment-groups`) });
     }
   },
 
@@ -828,6 +952,10 @@ const useCanvasStore = create((set, get) => ({
       const url = params.toString()
         ? `${API_BASE}/api/courses/${courseId}/assignments?${params.toString()}`
         : `${API_BASE}/api/courses/${courseId}/assignments`;
+      
+      // Track API request for rate calculation
+      get().trackApiRequest();
+      
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${apiToken}`,
@@ -847,7 +975,9 @@ const useCanvasStore = create((set, get) => ({
             message = `${message} - ${errorText.substring(0, 200)}`;
           }
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status; // Preserve status code for error detection
+        throw error;
       }
       const requestUrl = response.headers.get('X-Canvas-Request-Url');
       const assignmentsText = await response.text();
@@ -870,7 +1000,9 @@ const useCanvasStore = create((set, get) => ({
         },
       }));
     } catch (error) {
-      set({ error: getErrorMessage(error), loadingAssignments: false });
+      const { selectedCourse } = get();
+      const courseId = selectedCourse?.id || 'unknown';
+      set({ error: getErrorMessage(error, get().getApiRate, `/api/courses/${courseId}/assignments`), loadingAssignments: false });
     }
   },
 
@@ -946,6 +1078,10 @@ const useCanvasStore = create((set, get) => ({
       const url = params.toString()
         ? `${API_BASE}/api/courses/${courseId}/assignments/${assignmentId}/submissions?${params.toString()}`
         : `${API_BASE}/api/courses/${courseId}/assignments/${assignmentId}/submissions`;
+      
+      // Track API request for rate calculation
+      get().trackApiRequest();
+      
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${apiToken}`,
@@ -965,7 +1101,9 @@ const useCanvasStore = create((set, get) => ({
             message = `${message} - ${errorText.substring(0, 200)}`;
           }
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status; // Preserve status code for error detection
+        throw error;
       }
       const requestUrl = response.headers.get('X-Canvas-Request-Url');
       const submissionsText = await response.text();
@@ -1151,7 +1289,7 @@ const useCanvasStore = create((set, get) => ({
         get().cacheAllPdfs(requestId);
       }
     } catch (error) {
-      set({ error: getErrorMessage(error), loadingSubmissions: false });
+      set({ error: getErrorMessage(error, get().getApiRate, `/api/courses/${courseId}/assignments/${assignmentId}/submissions`), loadingSubmissions: false });
     }
   },
 
@@ -1177,9 +1315,6 @@ const useCanvasStore = create((set, get) => ({
   nextUngradedSubmission: () => {
     const { submissionIndex, submissions } = get();
     if (submissions.length === 0) return;
-
-    // Helper to check if submission needs grading
-    const needsGrading = (sub) => !sub.isGraded || sub.isAutoGradedZero;
 
     // Search from current position + 1 to end
     for (let i = submissionIndex + 1; i < submissions.length; i++) {
@@ -1536,6 +1671,92 @@ const useCanvasStore = create((set, get) => ({
     });
   },
 
+  // Refresh submission statuses by re-enriching with latest staged grades and rubric scores
+  refreshSubmissionStatuses: () => {
+    const { allSubmissions, stagedGrades, rubricScores, selectedAssignment } = get();
+    if (!selectedAssignment || !allSubmissions || allSubmissions.length === 0) {
+      console.log('[refreshSubmissionStatuses] No assignment or submissions to refresh');
+      return;
+    }
+
+    const assignmentId = selectedAssignment.id;
+    
+    // Helper to get student first name
+    const getStudentFirstName = (sub) => {
+      const name = sub.user?.name || sub.user?.sortable_name || '';
+      if (name) {
+        // Extract first name (before first space or comma)
+        const firstName = name.split(/[\s,]/)[0];
+        return firstName;
+      }
+      return `Student ${String(sub.user_id || sub.id)}`;
+    };
+    
+    // Store previous state for comparison
+    const previousState = allSubmissions.map(sub => ({
+      submissionId: String(sub.user_id || sub.id),
+      isGraded: sub.isGraded,
+      hasStagedGrade: !!sub.stagedGrade,
+      stagedGradeGrade: sub.stagedGrade?.grade,
+      studentFirstName: getStudentFirstName(sub),
+    }));
+
+    // Re-enrich submissions with latest metadata
+    const enriched = enrichSubmissions(allSubmissions, stagedGrades, rubricScores, assignmentId);
+
+    // Find submissions that changed
+    const updatedSubmissions = [];
+    enriched.forEach((sub, index) => {
+      const submissionId = String(sub.user_id || sub.id);
+      const studentFirstName = getStudentFirstName(sub);
+      const previous = previousState.find(p => p.submissionId === submissionId);
+      
+      if (previous) {
+        const changed = 
+          previous.isGraded !== sub.isGraded ||
+          previous.hasStagedGrade !== !!sub.stagedGrade ||
+          previous.stagedGradeGrade !== sub.stagedGrade?.grade;
+        
+        if (changed) {
+          updatedSubmissions.push({
+            submissionId,
+            studentFirstName,
+            studentName: sub.user?.name || sub.user?.sortable_name || `Student ${submissionId}`,
+            previous: {
+              isGraded: previous.isGraded,
+              hasStagedGrade: previous.hasStagedGrade,
+              stagedGradeGrade: previous.stagedGradeGrade,
+            },
+            current: {
+              isGraded: sub.isGraded,
+              hasStagedGrade: !!sub.stagedGrade,
+              stagedGradeGrade: sub.stagedGrade?.grade,
+            },
+          });
+        }
+      }
+    });
+
+    // Log updated submissions with student first names
+    if (updatedSubmissions.length > 0) {
+      console.log(`[refreshSubmissionStatuses] Updated ${updatedSubmissions.length} submission(s):`);
+      updatedSubmissions.forEach((updated, idx) => {
+        console.log(`  [${idx + 1}] Submission ${updated.submissionId} (${updated.studentFirstName}):`, {
+          previous: updated.previous,
+          current: updated.current,
+        });
+      });
+    } else {
+      console.log('[refreshSubmissionStatuses] No submissions were updated');
+    }
+
+    // Update allSubmissions with enriched data
+    set({ allSubmissions: enriched });
+
+    // Re-apply sorting to update filtered submissions view
+    get().applySorting();
+  },
+
   // Push all staged grades to Canvas
   pushAllStagedGrades: async (includeComments = true) => {
     const { selectedCourse, selectedAssignment, apiToken, canvasApiBase, stagedGrades } = get();
@@ -1635,6 +1856,9 @@ const useCanvasStore = create((set, get) => ({
         ? `${API_BASE}/api/courses/${selectedCourse.id}/assignments/${assignmentId}/submissions/update_grades?${params.toString()}`
         : `${API_BASE}/api/courses/${selectedCourse.id}/assignments/${assignmentId}/submissions/update_grades`;
 
+      // Track API request for rate calculation
+      get().trackApiRequest();
+
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -1660,7 +1884,9 @@ const useCanvasStore = create((set, get) => ({
             message = `${message} - ${errorText.substring(0, 200)}`;
           }
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status; // Preserve status code for error detection
+        throw error;
       }
 
       const progressData = await response.json();
@@ -1786,7 +2012,10 @@ const useCanvasStore = create((set, get) => ({
 
       return { results, errors: [] }; // Batch update either succeeds or fails entirely
     } catch (error) {
-      set({ error: getErrorMessage(error), pushingGrades: false });
+      const { selectedCourse, selectedAssignment } = get();
+      const assignmentId = selectedAssignment?.id || 'unknown';
+      const courseId = selectedCourse?.id || 'unknown';
+      set({ error: getErrorMessage(error, get().getApiRate, `/api/courses/${courseId}/assignments/${assignmentId}/submissions/update_grades`), pushingGrades: false });
       throw error;
     }
   },
@@ -1833,7 +2062,9 @@ const useCanvasStore = create((set, get) => ({
             message = `${message} - ${errorText.substring(0, 200)}`;
           }
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status; // Preserve status code for error detection
+        throw error;
       }
 
       const rubricsText = await response.text();
@@ -1847,7 +2078,7 @@ const useCanvasStore = create((set, get) => ({
 
       set({ courseRubrics: Array.isArray(rubrics) ? rubrics : [], loadingRubrics: false });
     } catch (error) {
-      set({ error: getErrorMessage(error), loadingRubrics: false });
+      set({ error: getErrorMessage(error, get().getApiRate, `/api/courses/${selectedCourse.id}/rubrics`), loadingRubrics: false });
     }
   },
 
@@ -1870,6 +2101,9 @@ const useCanvasStore = create((set, get) => ({
         ? `${API_BASE}/api/courses/${selectedCourse.id}/rubrics/${rubricId}?${params.toString()}`
         : `${API_BASE}/api/courses/${selectedCourse.id}/rubrics/${rubricId}`;
 
+      // Track API request for rate calculation
+      get().trackApiRequest();
+
       const response = await fetch(url, {
         headers: {
           'Authorization': `Bearer ${apiToken}`,
@@ -1890,7 +2124,9 @@ const useCanvasStore = create((set, get) => ({
             message = `${message} - ${errorText.substring(0, 200)}`;
           }
         }
-        throw new Error(message);
+        const error = new Error(message);
+        error.status = response.status; // Preserve status code for error detection
+        throw error;
       }
 
       const rubricText = await response.text();

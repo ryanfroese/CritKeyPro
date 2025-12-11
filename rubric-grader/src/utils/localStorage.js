@@ -14,6 +14,8 @@ const STORAGE_KEYS = {
   PDF_PERSIST_ZOOM: 'hotrubric_pdf_persist_zoom',
   RUBRIC_SCORES: 'hotrubric_rubric_scores',
   STAGED_GRADES: 'hotrubric_staged_grades',
+  API_RATE_ERROR_LOG: 'hotrubric_api_rate_error_log',
+  API_RATE_TIMESTAMPS: 'hotrubric_api_rate_timestamps',
 };
 
 /**
@@ -487,6 +489,125 @@ export const getAllStagedGrades = () => {
   } catch (error) {
     console.error('Error reading all staged grades from localStorage:', error);
     return {};
+  }
+};
+
+/**
+ * Log a 429 rate limit error with API rate at the time of error
+ * @param {number} apiRate - The API rate (requests per minute) when the error occurred
+ * @param {string} endpoint - The API endpoint that triggered the error
+ */
+export const logRateLimitError = (apiRate, endpoint = 'unknown') => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.API_RATE_ERROR_LOG);
+    const logs = data ? JSON.parse(data) : [];
+    
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      apiRate: apiRate,
+      endpoint: endpoint,
+    };
+    
+    logs.push(logEntry);
+    
+    // Keep only the last 100 entries to prevent localStorage from growing too large
+    const trimmedLogs = logs.slice(-100);
+    
+    localStorage.setItem(STORAGE_KEYS.API_RATE_ERROR_LOG, JSON.stringify(trimmedLogs));
+  } catch (error) {
+    console.error('Error logging rate limit error to localStorage:', error);
+  }
+};
+
+/**
+ * Get all rate limit error logs
+ * @returns {Array} Array of log entries
+ */
+export const getRateLimitErrorLogs = () => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.API_RATE_ERROR_LOG);
+    return data ? JSON.parse(data) : [];
+  } catch (error) {
+    console.error('Error reading rate limit error logs from localStorage:', error);
+    return [];
+  }
+};
+
+/**
+ * Format rate limit error logs as text
+ * @returns {string} Formatted text log
+ */
+export const formatRateLimitErrorLogsAsText = () => {
+  const logs = getRateLimitErrorLogs();
+  
+  if (logs.length === 0) {
+    return 'No rate limit errors logged.';
+  }
+  
+  let text = 'Rate Limit Error Log (429 Errors)\n';
+  text += '=====================================\n\n';
+  text += `Total errors logged: ${logs.length}\n\n`;
+  
+  logs.forEach((log, index) => {
+    const date = new Date(log.timestamp);
+    text += `[${index + 1}] ${date.toLocaleString()}\n`;
+    text += `    API Rate: ${log.apiRate} requests/minute\n`;
+    text += `    Endpoint: ${log.endpoint}\n\n`;
+  });
+  
+  return text;
+};
+
+/**
+ * Clear all rate limit error logs
+ */
+export const clearRateLimitErrorLogs = () => {
+  try {
+    localStorage.removeItem(STORAGE_KEYS.API_RATE_ERROR_LOG);
+  } catch (error) {
+    console.error('Error clearing rate limit error logs from localStorage:', error);
+  }
+};
+
+/**
+ * Save API rate request timestamps
+ * @param {Array<number>} timestamps - Array of timestamp numbers
+ */
+export const saveApiRateTimestamps = (timestamps) => {
+  try {
+    localStorage.setItem(STORAGE_KEYS.API_RATE_TIMESTAMPS, JSON.stringify(timestamps));
+  } catch (error) {
+    console.error('Error saving API rate timestamps to localStorage:', error);
+  }
+};
+
+/**
+ * Get API rate request timestamps
+ * @returns {Array<number>} Array of timestamp numbers
+ */
+export const getApiRateTimestamps = () => {
+  try {
+    const data = localStorage.getItem(STORAGE_KEYS.API_RATE_TIMESTAMPS);
+    if (!data) return [];
+    
+    const timestamps = JSON.parse(data);
+    // Ensure we have an array of numbers
+    if (!Array.isArray(timestamps)) return [];
+    
+    // Clean up timestamps older than 1 minute when loading
+    const now = Date.now();
+    const oneMinuteAgo = now - 60000;
+    const recentTimestamps = timestamps.filter(ts => typeof ts === 'number' && ts > oneMinuteAgo);
+    
+    // If we cleaned up timestamps, save the cleaned version
+    if (recentTimestamps.length !== timestamps.length) {
+      saveApiRateTimestamps(recentTimestamps);
+    }
+    
+    return recentTimestamps;
+  } catch (error) {
+    console.error('Error reading API rate timestamps from localStorage:', error);
+    return [];
   }
 };
 

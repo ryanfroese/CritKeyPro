@@ -26,6 +26,7 @@ import {
   RadioButtonUnchecked,
   CloudUpload,
   DeleteSweep,
+  Refresh,
 } from '@mui/icons-material';
 import useCanvasStore from '../store/canvasStore';
 
@@ -43,6 +44,7 @@ const StudentSelector = () => {
   const pushAllStagedGrades = useCanvasStore((state) => state.pushAllStagedGrades);
   const pushingGrades = useCanvasStore((state) => state.pushingGrades);
   const clearAllStagedGradesForAssignment = useCanvasStore((state) => state.clearAllStagedGradesForAssignment);
+  const refreshSubmissionStatuses = useCanvasStore((state) => state.refreshSubmissionStatuses);
 
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false);
   const [clearConfirmDialogOpen, setClearConfirmDialogOpen] = useState(false);
@@ -320,6 +322,16 @@ const StudentSelector = () => {
             })}
           </Select>
         </FormControl>
+
+        <Tooltip title="Refresh submission statuses">
+          <IconButton
+            color="default"
+            onClick={refreshSubmissionStatuses}
+            size="small"
+          >
+            <Refresh />
+          </IconButton>
+        </Tooltip>
 
         <ToggleButtonGroup
           value={sortBy}

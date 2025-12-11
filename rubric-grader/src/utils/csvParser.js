@@ -74,11 +74,6 @@ const processCanvasCSV = (data) => {
     // Sort levels by points descending (highest first)
     levels.sort((a, b) => b.points - a.points);
 
-    // Set default totalPoints to highest level points
-    const defaultTotalPoints = levels.length > 0 
-      ? Math.max(...levels.map(l => Number(l.points) || 0))
-      : 0;
-
     criteria.push({
       name: criteriaName,
       description: criteriaDescription,
@@ -86,7 +81,8 @@ const processCanvasCSV = (data) => {
       levels: levels,
       selectedLevel: null, // Index of selected level
       comment: '', // Additional comment for this criterion
-      totalPoints: defaultTotalPoints, // Default to highest level points
+      totalPoints: null, // Use dynamic max calculation from levels
+      useCustomTotalPoints: false, // Imported rubrics should use dynamic max calculation
     });
   }
 

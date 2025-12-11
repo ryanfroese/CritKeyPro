@@ -70,6 +70,8 @@ const CanvasIntegration = () => {
     stagedGrades,
     loadingRubrics,
     fetchCourseRubrics,
+    getApiRate,
+    showApiRate,
   } = useCanvasStore();
 
   const { importRubric, currentCourse, availableRubrics } = useRubricStore();
@@ -83,6 +85,7 @@ const CanvasIntegration = () => {
   const [importSuccess, setImportSuccess] = useState(null);
   const [importError, setImportError] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [apiRate, setApiRate] = useState(0);
 
   useEffect(() => {
     initialize();
@@ -93,6 +96,26 @@ const CanvasIntegration = () => {
       setLocalApiBase(canvasApiBase);
     }
   }, [initialize, apiToken, canvasApiBase]);
+
+  // Update API rate display every second when visible
+  useEffect(() => {
+    if (!showApiRate || !apiToken) {
+      setApiRate(0);
+      return;
+    }
+
+    const updateRate = () => {
+      setApiRate(getApiRate());
+    };
+
+    // Update immediately
+    updateRate();
+
+    // Update every second
+    const interval = setInterval(updateRate, 1000);
+
+    return () => clearInterval(interval);
+  }, [showApiRate, apiToken, getApiRate]);
 
   // Auto-connect if token is saved (only once on mount)
   useEffect(() => {
@@ -282,6 +305,14 @@ const CanvasIntegration = () => {
           {isConnecting ? 'Connecting...' : (courses.length > 0 ? 'Refresh Canvas Connection' : 'Save & Connect')}
         </Button>
       </Stack>
+
+      {showApiRate && apiToken && (
+        <Box sx={{ mt: 1, mb: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            API Rate: {apiRate} requests/minute
+          </Typography>
+        </Box>
+      )}
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>

@@ -15,12 +15,16 @@ import {
   Chip,
   Box,
   Typography,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
+import { Description as DescriptionIcon } from '@mui/icons-material';
 import confetti from 'canvas-confetti';
 import useCanvasStore from '../store/canvasStore';
+import { formatRateLimitErrorLogsAsText, getRateLimitErrorLogs } from '../utils/localStorage';
 
 const CourseDebugModal = ({ open, onClose }) => {
-  const { apiToken, canvasApiBase } = useCanvasStore();
+  const { apiToken, canvasApiBase, showApiRate, setShowApiRate } = useCanvasStore();
   const [allCourses, setAllCourses] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -145,6 +149,27 @@ const CourseDebugModal = ({ open, onClose }) => {
     triggerConfetti();
   };
 
+  const handleViewRateLimitLog = () => {
+    const logs = getRateLimitErrorLogs();
+    if (logs.length === 0) {
+      alert('No rate limit errors logged.');
+      return;
+    }
+
+    const logText = formatRateLimitErrorLogsAsText();
+    
+    // Create a blob and download as text file
+    const blob = new Blob([logText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `rate-limit-errors-${new Date().toISOString().split('T')[0]}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   if (!open) return null;
 
   return (
@@ -162,6 +187,27 @@ const CourseDebugModal = ({ open, onClose }) => {
           <Typography variant="h6">Course Debug - All Courses</Typography>
           <Button onClick={fetchAllCourses} disabled={loading} size="small">
             Refresh
+          </Button>
+        </Box>
+        <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 2 }}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={showApiRate}
+                onChange={(e) => setShowApiRate(e.target.checked)}
+                size="small"
+              />
+            }
+            label="Show API Rate Display"
+          />
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<DescriptionIcon />}
+            onClick={handleViewRateLimitLog}
+            disabled={getRateLimitErrorLogs().length === 0}
+          >
+            View Rate Limit Log ({getRateLimitErrorLogs().length})
           </Button>
         </Box>
       </DialogTitle>

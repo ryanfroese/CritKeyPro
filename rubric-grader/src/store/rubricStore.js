@@ -162,7 +162,7 @@ const useRubricStore = create((set, get) => ({
     if (!currentCourse) {
       throw new Error('Please select a course first');
     }
-    
+
     let rubricWithLabel = {
       feedbackLabel: '',
       ...rubric,
@@ -172,10 +172,26 @@ const useRubricStore = create((set, get) => ({
     }
     saveRubricToStorage(currentCourse, rubricWithLabel);
     get().loadRubricsForCourse(currentCourse);
-    
+
     // Auto-select the newly imported rubric
     set({ currentRubric: rubricWithLabel, currentCriterionIndex: 0 });
     get().saveSession();
+  },
+
+  deleteRubric: (rubricName) => {
+    const { currentCourse, currentRubric } = get();
+    if (!currentCourse) {
+      throw new Error('Please select a course first');
+    }
+
+    deleteRubricFromStorage(currentCourse, rubricName);
+    get().loadRubricsForCourse(currentCourse);
+
+    // If the deleted rubric was the current one, clear it
+    if (currentRubric && currentRubric.name === rubricName) {
+      set({ currentRubric: null, currentCriterionIndex: 0 });
+      get().saveSession();
+    }
   },
 
   // Create a new rubric with a single criterion and one level

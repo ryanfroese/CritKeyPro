@@ -12,27 +12,28 @@ CritKey Pro extends CritKey with Canvas LMS integration, allowing you to grade a
 
 ## Setup
 
-### 1. Backend Server
+### 1. Install Dependencies
 
-The backend server acts as a proxy between the frontend and Canvas API to handle authentication and CORS.
+From the repository root:
 
 ```bash
-cd server
 npm install
-cp .env.example .env
-# Edit .env with your Canvas API base URL if needed
+```
+
+This also installs dependencies in `server/` and `rubric-grader/`. A `.env` file is optional; the server defaults to `http://localhost:3001` and Canvas Cloud.
+
+### 2. Start Both Servers
+
+From the repository root, one command starts the backend proxy and the Vite frontend:
+
+```bash
 npm start
 ```
 
-The server will run on `http://localhost:3001` by default.
+- Backend: `http://localhost:3001`
+- Frontend: `http://localhost:5173`
 
-### 2. Frontend
-
-```bash
-cd rubric-grader
-npm install
-npm run dev
-```
+Press `Ctrl+C` to stop both. To run them separately instead, use `npm run dev:server` and `npm run dev:frontend`.
 
 ### 3. Canvas API Token
 
@@ -115,18 +116,19 @@ The interface is divided into three panels:
 
 ### Running Both Servers
 
-You'll need both the backend server and frontend dev server running:
+From the repository root:
 
-**Terminal 1 (Backend):**
 ```bash
-cd server
-npm run dev
+npm start
 ```
 
-**Terminal 2 (Frontend):**
+That launches the backend (`http://localhost:3001`) and frontend (`http://localhost:5173`) together. Press `Ctrl+C` to stop both.
+
+To run them in separate terminals:
+
 ```bash
-cd rubric-grader
-npm run dev
+npm run dev:server      # backend
+npm run dev:frontend    # frontend
 ```
 
 ### Environment Variables

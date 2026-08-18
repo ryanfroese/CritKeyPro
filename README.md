@@ -4,7 +4,7 @@ Fast rubric grading application with keyboard shortcuts designed for Canvas LMS.
 
 **All data stored locally in your browser** - no accounts, no uploads, complete privacy.
 
-> **🚀 Developers:** Running locally? You need BOTH servers running - see [Quick Start for Local Development](#quick-start-for-local-development)
+> **🚀 Developers:** Running locally? From the repo root, run `npm start` to launch both servers — see [Quick Start for Local Development](#quick-start-for-local-development)
 
 ---
 
@@ -1074,7 +1074,7 @@ Because data is stored in your browser:
 **Canvas Connection Issues**
 
 - **ERR_CONNECTION_REFUSED to localhost:3001**: The backend server isn't running
-  - Make sure you've started the server: `cd server && npm run dev`
+  - From the repo root, run `npm start` to launch both the backend and frontend
   - Check that you see "CritKey Pro server running on http://localhost:3001" in the terminal
   - You need BOTH the server (port 3001) AND the frontend (port 5173) running
 - Verify API token is correct (no extra spaces)
@@ -1109,7 +1109,7 @@ Because data is stored in your browser:
 ### Frequently Asked Questions
 
 **Q: How do I run CritKeyPro locally for development?**
-A: You need to run TWO servers: the backend (`cd server && npm run dev`) on port 3001, and the frontend (`cd rubric-grader && npm run dev`) on port 5173. See the "Quick Start for Local Development" section for detailed instructions.
+A: From the repo root, run `npm install` once, then `npm start`. That launches the backend on port 3001 and the frontend on port 5173. See the "Quick Start for Local Development" section for detailed instructions.
 
 **Q: Do I need Canvas to use CritKeyPro?**
 A: No! Use it standalone with CSV imports. Canvas integration is optional.
@@ -1163,34 +1163,34 @@ A: Currently no, but you can edit generated feedback before copying/submitting.
 
 #### Step 1: Install Dependencies
 
-```bash
-# Install server dependencies
-cd server
-npm install
+From the repo root:
 
-# Install frontend dependencies
-cd ../rubric-grader
+```bash
 npm install
 ```
+
+This also installs dependencies in `server/` and `rubric-grader/` via the `postinstall` script.
 
 #### Step 2: Start Both Servers
 
-You need **two terminal windows**:
+From the repo root, one command starts the backend and the Vite frontend together:
 
-**Terminal 1 - Start the Backend Server:**
 ```bash
-cd server
-npm run dev
-# Server will run on http://localhost:3001
-# You should see: "CritKey Pro server running on http://localhost:3001"
+npm start
 ```
 
-**Terminal 2 - Start the Frontend:**
+You should see:
+
+- Backend on `http://localhost:3001` (`CritKey Pro server running on http://localhost:3001`)
+- Frontend on `http://localhost:5173`
+
+Press `Ctrl+C` to stop both servers.
+
+To run them in separate terminals instead:
+
 ```bash
-cd rubric-grader
-npm run dev
-# Frontend will run on http://localhost:5173
-# Open http://localhost:5173 in your browser
+npm run dev:server      # backend on http://localhost:3001
+npm run dev:frontend    # frontend on http://localhost:5173
 ```
 
 #### Step 3: Access the App
@@ -1199,7 +1199,7 @@ Open your browser to `http://localhost:5173`
 
 Now when you click "Save & Connect" with your Canvas token, the frontend will communicate with the backend server at `localhost:3001`, which proxies requests to Canvas.
 
-**Note:** If you only want to use standalone mode (CSV imports without Canvas integration), you only need to run the frontend.
+**Note:** If you only want to use standalone mode (CSV imports without Canvas integration), you only need the frontend: `npm run dev:frontend`.
 
 ---
 
@@ -1239,11 +1239,16 @@ npm run lint     # Run ESLint
 npm run preview  # Preview production build
 ```
 
-#### Root (deployment commands):
+#### Root (from repository root):
 
 ```bash
-npm run build    # Production build (frontend only)
-npm run preview  # Preview production build
+npm install         # Install root, frontend, and server dependencies
+npm start           # Start backend (3001) and frontend (5173) together
+npm run dev         # Same as npm start
+npm run dev:server  # Backend only
+npm run dev:frontend # Frontend only
+npm run build       # Production build (frontend only)
+npm run preview     # Preview production build
 ```
 
 ### Building
